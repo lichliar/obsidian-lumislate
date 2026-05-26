@@ -1,0 +1,19 @@
+{
+  "name": "obsidian-lumislate",
+  "version": "1.0.0",
+  "description": "LumiSlate Obsidian Plugin",
+  "main": "main.js",
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "interactjs": "^1.10.27",
+    "modern-screenshot": "^4.7.0"
+  },
+  "devDependencies": {
+    "obsidian": "^1.5.7",
+    "tsup": "^8.0.2",
+    "typescript": "^5.3.3"
+  }
+}
