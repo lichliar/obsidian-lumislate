@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "dev": "tsup --watch",
-    "build": "tsup"
+    "build": "tsup && node -e \"require('fs').copyFileSync('src/ui/styles.css', 'dist/styles.css')\" && node scripts/deploy.js"
   },
   "dependencies": {
     "interactjs": "^1.10.27",

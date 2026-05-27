@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-	entry: ['main.ts'],
+	entry: ['src/core/main.ts'],
 	format: ['cjs'],
 	minify: true,
 	external: ['obsidian'],

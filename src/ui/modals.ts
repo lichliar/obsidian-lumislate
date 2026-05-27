@@ -1,4 +1,4 @@
-import { App, Modal, ButtonComponent } from 'obsidian';
+import { App, Modal, ButtonComponent, setIcon } from 'obsidian';
 
 export type PreprocessChoice = 'preprocess' | 'direct' | 'cancel';
 
@@ -91,17 +91,17 @@ export class ExportMenuModal extends Modal {
 
 		const menu = contentEl.createEl('div', { cls: 'lumislate-export-menu' });
 
-		this.createMenuItem(menu, '📄 下载 HTML', '下载为单文件 HTML', () => {
+		this.createMenuItem(menu, 'file-code', '下载 HTML', '下载为单文件 HTML', () => {
 			this.onExport('html-download');
 			this.close();
 		});
 
-		this.createMenuItem(menu, '🖼️ 下载 PNG', '导出为高清图片', () => {
+		this.createMenuItem(menu, 'image', '下载 PNG', '导出为高清图片', () => {
 			this.onExport('png-download');
 			this.close();
 		});
 
-		this.createMenuItem(menu, '💾 保存到 Vault', '保存 HTML 到 Obsidian 仓库', () => {
+		this.createMenuItem(menu, 'save', '保存到 Vault', '保存 HTML 到 Obsidian 仓库', () => {
 			this.onExport('html-vault');
 			this.close();
 		});
@@ -109,12 +109,15 @@ export class ExportMenuModal extends Modal {
 
 	private createMenuItem(
 		container: HTMLElement,
+		icon: string,
 		title: string,
 		desc: string,
 		onClick: () => void
 	): void {
 		const item = container.createEl('div', { cls: 'lumislate-export-item' });
-		item.createEl('div', { cls: 'lumislate-export-item-title', text: title });
+		const titleEl = item.createEl('div', { cls: 'lumislate-export-item-title' });
+		setIcon(titleEl.createSpan(), icon);
+		titleEl.appendText(' ' + title);
 		item.createEl('div', { cls: 'lumislate-export-item-desc', text: desc });
 		item.addEventListener('click', onClick);
 	}

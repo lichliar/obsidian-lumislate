@@ -11,18 +11,18 @@ export type Mode = 'marp' | 'design';
 export interface ModeInfo {
 	id: Mode;
 	name: string;
-	emoji: string;
+	icon: string;
 }
 
 export const MODES: ModeInfo[] = [
-	{ id: 'marp', name: 'Marp 幻灯片', emoji: '📊' },
-	{ id: 'design', name: 'Design 设计', emoji: '🎨' },
+	{ id: 'marp', name: '自定义模式', icon: 'palette' },
+	{ id: 'design', name: 'AI模式', icon: 'sparkles' },
 ];
 
 export interface Skill {
 	id: string;
 	name: string;
-	emoji: string;
+	icon: string;
 	description: string;
 	category: string;
 	body: string;
@@ -136,7 +136,7 @@ export const SKILLS: Skill[] = [
 	{
 		id: 'blog-post',
 		name: '博客长文',
-		emoji: '📰',
+		icon: 'newspaper',
 		description: '杂志感长文, 含 masthead、hero、figures、pull quote、作者署名',
 		category: 'article',
 		body: `【模板: 博客长文 / Blog Post】
@@ -155,7 +155,7 @@ export const SKILLS: Skill[] = [
 	{
 		id: 'saas-landing',
 		name: 'SaaS Landing',
-		emoji: '🚀',
+		icon: 'rocket',
 		description: '单页 SaaS 落地页, 含 hero/features/social-proof/pricing/CTA',
 		category: 'prototype',
 		body: `【模板: SaaS Landing】

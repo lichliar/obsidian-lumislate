@@ -1,5 +1,5 @@
 import { Vault, TFile, Notice } from 'obsidian';
-import { extractFrontmatter, extractFrontmatterValue } from './ai_service';
+import { extractFrontmatter, extractFrontmatterValue } from '../ai/ai_service';
 
 export interface PreprocessState {
 	preprocessed: boolean;

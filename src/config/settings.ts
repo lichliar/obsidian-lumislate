@@ -1,7 +1,7 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
-import type LumiSlatePlugin from './main';
-import { SKILLS, MODES, type Mode } from './skills';
-import { getAvailableAgents, detectAgents, type DetectedAgent } from './local_agent';
+import { App, PluginSettingTab, Setting, setIcon } from 'obsidian';
+import type LumiSlatePlugin from '../core/main';
+import { SKILLS, MODES, type Mode } from '../ai/skills';
+import { getAvailableAgents, detectAgents, type DetectedAgent } from '../ai/local_agent';
 
 export interface LumiSlateSettings {
 	aiProvider: 'local' | 'http';
@@ -15,6 +15,8 @@ export interface LumiSlateSettings {
 	defaultExportFolder: string;
 	/** 各 mode / skill 对应的预处理 prompt，key 为 modeId 或 skillId */
 	preprocessPrompts: Record<string, string>;
+	/** Marp CSS 预设列表 */
+	marpCssPresets: Array<{ name: string; css: string }>;
 }
 
 const DEFAULT_PREPROCESS_PROMPTS: Record<string, string> = {
@@ -34,6 +36,11 @@ export const DEFAULT_SETTINGS: LumiSlateSettings = {
 	localAgentBinOverride: '',
 	defaultExportFolder: '',
 	preprocessPrompts: { ...DEFAULT_PREPROCESS_PROMPTS },
+	marpCssPresets: [
+		{ name: '默认深色', css: 'section { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); color: #e2e8f0; }' },
+		{ name: '纯白简约', css: 'section { background: #ffffff; color: #1a1a1a; }' },
+		{ name: '暖色渐变', css: 'section { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: #e94560; }' },
+	],
 };
 
 export class LumiSlateSettingTab extends PluginSettingTab {
@@ -240,6 +247,88 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 		for (const skill of SKILLS) {
 			this.renderPreprocessSetting(containerEl, skill.id, `${skill.emoji} ${skill.name}`);
 		}
+
+		// ========== Marp CSS 预设 ==========
+		containerEl.createEl('h3', { text: 'Marp CSS 预设' });
+		containerEl.createEl('p', {
+			text: '管理 Marp 幻灯片的 CSS 预设样式，可在 CSS 编辑弹窗中快速应用。',
+			cls: 'setting-item-description',
+		});
+
+		const presetList = containerEl.createEl('div');
+		this.renderCssPresetList(presetList);
+	}
+
+	/** 渲染 CSS 预设列表 */
+	private renderCssPresetList(containerEl: HTMLElement): void {
+		containerEl.empty();
+		const presets = this.plugin.settings.marpCssPresets;
+
+		if (presets.length === 0) {
+			containerEl.createEl('p', { text: '暂无预设', cls: 'setting-item-description' });
+		}
+
+		for (let i = 0; i < presets.length; i++) {
+			const preset = presets[i];
+			const row = containerEl.createEl('div', { cls: 'lumislate-preset-row' });
+			row.style.display = 'flex';
+			row.style.gap = '8px';
+			row.style.alignItems = 'center';
+			row.style.marginBottom = '8px';
+
+			const nameInput = row.createEl('input');
+			nameInput.type = 'text';
+			nameInput.value = preset.name;
+			nameInput.style.flex = '1';
+			nameInput.addEventListener('change', async () => {
+				this.plugin.settings.marpCssPresets[i].name = nameInput.value;
+				await this.plugin.saveSettings();
+			});
+
+			const cssBtn = row.createEl('button', { text: '编辑 CSS' });
+			cssBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
+			cssBtn.addEventListener('click', () => {
+				const modal = new Modal(this.app);
+				modal.setTitle(`编辑预设: ${preset.name}`);
+				const wrap = modal.contentEl.createEl('div');
+				const ta = wrap.createEl('textarea');
+				ta.value = preset.css;
+				ta.rows = 8;
+				ta.style.width = '100%';
+				ta.style.fontFamily = 'monospace';
+				const btnWrap = wrap.createEl('div', { cls: 'lumislate-modal-buttons' });
+				const saveBtn = btnWrap.createEl('button', { text: '保存' });
+				saveBtn.addClass('lumislate-btn', 'lumislate-btn-primary');
+				saveBtn.addEventListener('click', async () => {
+					this.plugin.settings.marpCssPresets[i].css = ta.value;
+					await this.plugin.saveSettings();
+					modal.close();
+					new Notice('CSS 预设已更新');
+				});
+				const cancelBtn = btnWrap.createEl('button', { text: '取消' });
+				cancelBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
+				cancelBtn.addEventListener('click', () => modal.close());
+				modal.open();
+			});
+
+			const delBtn = row.createEl('button');
+			setIcon(delBtn, 'trash-2');
+			delBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
+			delBtn.addEventListener('click', async () => {
+				this.plugin.settings.marpCssPresets.splice(i, 1);
+				await this.plugin.saveSettings();
+				this.renderCssPresetList(containerEl);
+			});
+		}
+
+		const addBtn = containerEl.createEl('button', { text: '+ 添加新预设' });
+		addBtn.addClass('lumislate-btn', 'lumislate-btn-primary');
+		addBtn.style.marginTop = '8px';
+		addBtn.addEventListener('click', async () => {
+			this.plugin.settings.marpCssPresets.push({ name: '新预设', css: 'section { background: #0f172a; color: #e2e8f0; }' });
+			await this.plugin.saveSettings();
+			this.renderCssPresetList(containerEl);
+		});
 	}
 
 	/** 渲染单个预处理 prompt 设置项 */
