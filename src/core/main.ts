@@ -4,7 +4,7 @@ import { extractFrontmatter, extractFrontmatterValue, compileWithAI, previewHtml
 import { getAvailableAgents, detectAgent } from '../ai/local_agent';
 import { SKILLS, getSkillById, assemblePrompt, parseMarpDirectives, MARP_BODY, MODES, getModeById } from '../ai/skills';
 import type { Mode } from '../ai/skills';
-import { LumiSlateSettingTab, DEFAULT_SETTINGS } from '../config/settings';
+import { LumiSlateSettingTab, DEFAULT_SETTINGS, DEFAULT_CSS_SYSTEM_PROMPT } from '../config/settings';
 import type { LumiSlateSettings } from '../config/settings';
 import { createPreprocessedFile, checkPreprocessedState } from '../utils/preprocess';
 import { downloadHtml, downloadPngFromIframe, saveHtmlToVault } from '../utils/export';
@@ -26,12 +26,51 @@ function escapeHtml(text: string): string {
 }
 
 /**
+ * 将 Markdown 中的图片路径解析为 Vault 内可访问的 URL
+ * - ![[wiki-link]] → 通过 metadataCache 解析为 app:// 资源路径
+ * - ![alt](relative/path) → 尝试在 Vault 中查找并转换
+ */
+function resolveImagePaths(markdown: string, app: App, sourcePath: string): string {
+	// Wiki 链接图片（支持 Obsidian 的 |width 语法：![[filename|300]]）
+	let result = markdown.replace(/!\[\[([^\]]+?)\]\]/g, (match, linkpath) => {
+		const pipeIndex = linkpath.indexOf('|');
+		const filename = pipeIndex >= 0 ? linkpath.slice(0, pipeIndex).trim() : linkpath;
+		const file = app.metadataCache.getFirstLinkpathDest(filename, sourcePath);
+		if (file instanceof TFile) {
+			return `![${filename}](${app.vault.getResourcePath(file)})`;
+		}
+		return match;
+	});
+
+	// 标准 Markdown 图片（跳过已转换的外部 URL）
+	result = result.replace(/!\[([^\]]*?)\]\(([^)]+?)\)/g, (match, alt, path) => {
+		if (/^(https?:|data:|app:|obsidian:)/i.test(path)) {
+			return match;
+		}
+		const file = app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFile) {
+			return `![${alt}](${app.vault.getResourcePath(file)})`;
+		}
+		const sourceDir = sourcePath.includes('/') ? sourcePath.substring(0, sourcePath.lastIndexOf('/')) : '';
+		const relPath = sourceDir ? `${sourceDir}/${path}` : path;
+		const relFile = app.vault.getAbstractFileByPath(relPath);
+		if (relFile instanceof TFile) {
+			return `![${alt}](${app.vault.getResourcePath(relFile)})`;
+		}
+		return match;
+	});
+
+	return result;
+}
+
+/**
  * Markdown 转简单 HTML（无 AI 时的降级渲染）
  */
 function markdownToSimpleHTML(markdown: string): string {
 	const lines = markdown.split('\n');
 	let html = '';
 	let inList = false;
+	let listType: 'normal' | 'task' | null = null;
 	let inParagraph = false;
 
 	function closeParagraph(): void {
@@ -44,6 +83,7 @@ function markdownToSimpleHTML(markdown: string): string {
 		if (inList) {
 			html += '</ul>';
 			inList = false;
+			listType = null;
 		}
 	}
 	function openParagraph(): void {
@@ -56,8 +96,30 @@ function markdownToSimpleHTML(markdown: string): string {
 	}
 	function inlineFormat(text: string): string {
 		return escapeHtml(text)
+			.replace(/&lt;u&gt;(.+?)&lt;\/u&gt;/g, '<u>$1</u>')
+			.replace(/==(.+?)==/g, '<mark>$1</mark>')
+			.replace(/~~(.+?)~~/g, '<del>$1</del>')
+			.replace(/`([^`]+?)`/g, '<code>$1</code>')
+			.replace(/!\[([^\]]*?)\]\(([^)]+?)\)/g, '<img alt="$1" src="$2">')
+			.replace(/!\[\[([^\]]+?)\]\]/g, '<img alt="$1" src="$1">')
 			.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 			.replace(/\*(.+?)\*/g, '<em>$1</em>');
+	}
+
+	/** 检测一行是否只包含单个图片（无其他文本），返回 img HTML 或 null */
+	function extractImageOnly(line: string): string | null {
+		const trimmed = line.trim();
+		// 标准 Markdown 图片 ![alt](url) — resolveImagePaths 后 wiki 链接已被转换
+		const mdMatch = trimmed.match(/^!\[([^\]]*?)\]\((.*)\)$/);
+		if (mdMatch) {
+			return `<img alt="${escapeHtml(mdMatch[1])}" src="${escapeHtml(mdMatch[2])}">`;
+		}
+		// Wiki 链接图片 ![[filename]]（降级渲染未经过 resolveImagePaths 时可能遇到）
+		const wikiMatch = trimmed.match(/^!\[\[([^\]]+?)\]\]$/);
+		if (wikiMatch) {
+			return `<img alt="${escapeHtml(wikiMatch[1])}" src="${escapeHtml(wikiMatch[1])}">`;
+		}
+		return null;
 	}
 
 	/** 解析 Markdown 表格块，返回 HTML 和结束行索引 */
@@ -88,6 +150,8 @@ function markdownToSimpleHTML(markdown: string): string {
 		}
 
 		if (rows.length === 0) return null;
+		// 单行且无分隔行 → 不认为是表格（避免 ![[...|width]] 被误解析）
+		if (rows.length === 1 && !sepSeen) return null;
 
 		let tableHtml = '<table>';
 		if (sepSeen) {
@@ -119,6 +183,87 @@ function markdownToSimpleHTML(markdown: string): string {
 		return { html: tableHtml, end: i - 1 };
 	}
 
+	/** 解析围栏代码块，返回 HTML 和结束行索引 */
+	function parseCodeBlock(start: number): { html: string; end: number } | null {
+		const firstLine = lines[start].trim();
+		const fenceMatch = firstLine.match(/^```(\w*)/);
+		if (!fenceMatch) return null;
+		const lang = fenceMatch[1] || '';
+		let i = start + 1;
+		const codeLines: string[] = [];
+		while (i < lines.length) {
+			if (lines[i].trim() === '```') {
+				i++;
+				break;
+			}
+			codeLines.push(lines[i]);
+			i++;
+		}
+		const codeHtml = escapeHtml(codeLines.join('\n'));
+		const langClass = lang ? ` class="language-${lang}"` : '';
+		return {
+			html: `<pre><code${langClass}>${codeHtml}</code></pre>`,
+			end: i - 1,
+		};
+	}
+
+	/** 解析引用块 / Callout 块 */
+	function parseBlockquote(start: number): { html: string; end: number } | null {
+		let i = start;
+		const quoteLines: string[] = [];
+
+		while (i < lines.length) {
+			const line = lines[i];
+			const trimmed = line.trim();
+			if (!trimmed.startsWith('>')) break;
+			// 去掉开头的 > 和可选的空格
+			quoteLines.push(line.replace(/^>\s?/, ''));
+			i++;
+		}
+
+		if (quoteLines.length === 0) return null;
+
+		// 检测是否是 Callout：第一行匹配 [!TYPE] 或 [!TYPE] 标题
+		const firstLine = quoteLines[0].trim();
+		const calloutMatch = firstLine.match(/^\[!([\w-]+)\]\s*(.*)$/);
+
+		if (calloutMatch) {
+			const type = calloutMatch[1].toLowerCase();
+			const title = calloutMatch[2] || type.charAt(0).toUpperCase() + type.slice(1);
+			const contentLines = quoteLines.slice(1);
+			const contentHtml = contentLines.length > 0
+				? contentLines.map(l => inlineFormat(l)).join('<br>')
+				: '';
+			return {
+				html: `<div class="callout callout-${type}"><div class="callout-title">${inlineFormat(title)}</div>${contentHtml ? `<div class="callout-content">${contentHtml}</div>` : ''}</div>`,
+				end: i - 1,
+			};
+		}
+
+		// 普通引用块
+		const contentHtml = quoteLines.map(l => inlineFormat(l)).join('<br>');
+		return { html: `<blockquote>${contentHtml}</blockquote>`, end: i - 1 };
+	}
+
+	/** 解析数学公式块 $$...$$ */
+	function parseMathBlock(start: number): { html: string; end: number } | null {
+		let i = start + 1;
+		const mathLines: string[] = [];
+		while (i < lines.length) {
+			if (lines[i].trim() === '$$') {
+				i++;
+				break;
+			}
+			mathLines.push(lines[i]);
+			i++;
+		}
+		if (mathLines.length === 0) return null;
+		return {
+			html: `<div class="math-block">${escapeHtml(mathLines.join('\n'))}</div>`,
+			end: i - 1,
+		};
+	}
+
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		const trimmed = line.trim();
@@ -135,6 +280,30 @@ function markdownToSimpleHTML(markdown: string): string {
 			continue;
 		}
 
+		// 代码块检测
+		if (trimmed.startsWith('```')) {
+			const cb = parseCodeBlock(i);
+			if (cb) {
+				closeParagraph();
+				closeList();
+				html += cb.html;
+				i = cb.end;
+				continue;
+			}
+		}
+
+		// 数学公式块检测
+		if (trimmed === '$$') {
+			const mb = parseMathBlock(i);
+			if (mb) {
+				closeParagraph();
+				closeList();
+				html += mb.html;
+				i = mb.end;
+				continue;
+			}
+		}
+
 		// 表格检测
 		if (trimmed.includes('|')) {
 			const table = parseTableBlock(i);
@@ -143,6 +312,18 @@ function markdownToSimpleHTML(markdown: string): string {
 				closeList();
 				html += table.html;
 				i = table.end;
+				continue;
+			}
+		}
+
+		// 引用块 / Callout 检测
+		if (trimmed.startsWith('>')) {
+			const bq = parseBlockquote(i);
+			if (bq) {
+				closeParagraph();
+				closeList();
+				html += bq.html;
+				i = bq.end;
 				continue;
 			}
 		}
@@ -159,17 +340,65 @@ function markdownToSimpleHTML(markdown: string): string {
 			closeParagraph();
 			closeList();
 			html += `<h3>${inlineFormat(trimmed.slice(4))}</h3>`;
+		} else if (trimmed.startsWith('#### ')) {
+			closeParagraph();
+			closeList();
+			html += `<h4>${inlineFormat(trimmed.slice(5))}</h4>`;
+		} else if (trimmed.startsWith('##### ')) {
+			closeParagraph();
+			closeList();
+			html += `<h5>${inlineFormat(trimmed.slice(6))}</h5>`;
+		} else if (trimmed.startsWith('###### ')) {
+			closeParagraph();
+			closeList();
+			html += `<h6>${inlineFormat(trimmed.slice(7))}</h6>`;
 		} else if (trimmed.startsWith('- ')) {
 			closeParagraph();
-			if (!inList) {
-				html += '<ul>';
+			const isTask = /^- \[[ xX]\] /.test(trimmed);
+			const newListType = isTask ? 'task' : 'normal';
+			if (!inList || listType !== newListType) {
+				closeList();
+				html += isTask ? '<ul class="task-list">' : '<ul>';
 				inList = true;
+				listType = newListType;
 			}
-			html += `<li>${inlineFormat(trimmed.slice(2))}</li>`;
+			if (isTask) {
+				const isChecked = trimmed[3] === 'x' || trimmed[3] === 'X';
+				const text = trimmed.slice(6);
+				html += `<li class="task-list-item"><input type="checkbox" disabled${isChecked ? ' checked' : ''}> ${inlineFormat(text)}</li>`;
+			} else {
+				html += `<li>${inlineFormat(trimmed.slice(2))}</li>`;
+			}
 		} else {
-			closeList();
-			openParagraph();
-			html += inlineFormat(line);
+			// 图片组检测：连续的图片-only 行自动并排
+			const imgOnly = extractImageOnly(line);
+			if (imgOnly) {
+				closeParagraph();
+				closeList();
+				const images = [imgOnly];
+				let j = i + 1;
+				while (j < lines.length) {
+					const nextTrimmed = lines[j].trim();
+					if (nextTrimmed === '') { j++; continue; }
+					const nextImg = extractImageOnly(lines[j]);
+					if (nextImg) {
+						images.push(nextImg);
+						j++;
+					} else {
+						break;
+					}
+				}
+				if (images.length > 1) {
+					html += `<div class="image-group">${images.join('')}</div>`;
+				} else {
+					html += `<div class="image-group">${imgOnly}</div>`;
+				}
+				i = j - 1;
+			} else {
+				closeList();
+				openParagraph();
+				html += inlineFormat(line);
+			}
 		}
 	}
 	closeParagraph();
@@ -204,6 +433,15 @@ p  { margin-bottom: 0.75rem; }
 ul { margin-left: 1.5rem; margin-bottom: 0.75rem; }
 li { margin-bottom: 0.25rem; }
 hr { border: none; border-top: 1px solid #334155; margin: 1.5rem 0; }
+mark { background: rgba(250, 204, 21, 0.3); color: inherit; padding: 0.1em 0.25em; border-radius: 3px; }
+u { text-decoration: underline; text-decoration-color: rgba(96, 165, 250, 0.6); text-underline-offset: 3px; }
+h4 { font-size: 1.125rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+h5 { font-size: 1rem; font-weight: 600; margin: 0.875rem 0 0.5rem; }
+h6 { font-size: 0.875rem; font-weight: 600; margin: 0.75rem 0 0.5rem; color: rgba(226, 232, 240, 0.8); }
+.task-list { list-style: none; margin-left: 0; padding-left: 0; }
+.task-list-item { display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.35rem; }
+.task-list-item input[type="checkbox"] { margin-top: 0.25rem; accent-color: #60a5fa; }
+.math-block { background: rgba(0,0,0,0.15); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; font-family: 'KaTeX_Math', 'Times New Roman', serif; text-align: center; margin: 0.75rem 0; }
 .lumislate-hover {
   background: rgba(96, 165, 250, 0.12);
   cursor: text;
@@ -218,10 +456,34 @@ hr { border: none; border-top: 1px solid #334155; margin: 1.5rem 0; }
   cursor: text;
 }
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 </head>
 <body>
 ${bodyContent}
-${getReverseMappingScript()}
+<script>
+(function() {
+  function initMath() {
+    if (typeof renderMathInElement === 'undefined') {
+      setTimeout(initMath, 100);
+      return;
+    }
+    renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ],
+      throwOnError: false
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initMath);
+  } else {
+    initMath();
+  }
+})();
+</script>
 </body>
 </html>`;
 }
@@ -257,26 +519,130 @@ function buildLongFormPage(body: string, options: { bgColor: string; textColor: 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; min-height: 100%; background: ${options.bgColor}; color: ${options.textColor}; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-#longform-content { width: 100%; min-height: 100%; padding: 3rem 4rem; line-height: 1.75; }
-#longform-content h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1.5rem; }
-#longform-content h2 { font-size: 1.75rem; font-weight: 700; margin: 1.5rem 0 1rem; }
-#longform-content h3 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 0.5rem; }
-#longform-content p { margin-bottom: 0.75rem; }
-#longform-content ul, #longform-content ol { margin-left: 2rem; margin-bottom: 0.75rem; }
-#longform-content li { margin-bottom: 0.35rem; }
-#longform-content hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.5rem 0; }
-#longform-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-#longform-content th, #longform-content td { border: 1px solid rgba(255,255,255,0.15); padding: 0.5rem 0.75rem; text-align: left; }
-#longform-content th { background: rgba(255,255,255,0.08); font-weight: 600; }
-#longform-content tr:nth-child(even) { background: rgba(255,255,255,0.03); }
+:root {
+  --ls-body-bg: ${options.bgColor};
+  --ls-body-color: ${options.textColor};
+  --ls-font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ls-content-padding: 3rem 4rem;
+  --ls-line-height: 1.75;
+  --ls-h1-size: 2.5rem;
+  --ls-h1-weight: 800;
+  --ls-h1-margin: 0 0 1.5rem 0;
+  --ls-h2-size: 1.75rem;
+  --ls-h2-weight: 700;
+  --ls-h2-margin: 1.5rem 0 1rem 0;
+  --ls-h3-size: 1.25rem;
+  --ls-h3-weight: 600;
+  --ls-h3-margin: 1rem 0 0.5rem 0;
+  --ls-p-margin: 0 0 0.75rem 0;
+  --ls-list-margin: 0 0 0.75rem 2rem;
+  --ls-li-margin: 0 0 0.35rem 0;
+  --ls-hr-border: 1px solid rgba(255,255,255,0.1);
+  --ls-hr-margin: 1.5rem 0;
+  --ls-table-margin: 1rem 0;
+  --ls-table-border: rgba(255,255,255,0.15);
+  --ls-table-cell-padding: 0.5rem 0.75rem;
+  --ls-table-head-bg: rgba(255,255,255,0.08);
+  --ls-table-row-alt-bg: rgba(255,255,255,0.03);
+  --ls-blockquote-margin: 1rem 0;
+  --ls-blockquote-padding: 0.75rem 1rem;
+  --ls-blockquote-border: 3px solid rgba(255,255,255,0.2);
+  --ls-blockquote-color: rgba(255,255,255,0.8);
+  --ls-callout-margin: 1rem 0;
+  --ls-callout-padding: 0.75rem 1rem;
+  --ls-callout-radius: 8px;
+  --ls-callout-border-width: 4px;
+  --ls-callout-bg: rgba(255,255,255,0.04);
+  --ls-callout-title-size: 0.95rem;
+  --ls-callout-title-weight: 700;
+  --ls-callout-title-margin: 0 0 0.35rem 0;
+  --ls-callout-content-size: 0.9rem;
+  --ls-callout-content-line-height: 1.6;
+  --ls-callout-note-color: #3b82f6;
+  --ls-callout-tip-color: #22c55e;
+  --ls-callout-warning-color: #f59e0b;
+  --ls-callout-danger-color: #ef4444;
+  --ls-callout-question-color: #a855f7;
+  --ls-callout-example-color: #6b7280;
+}
+html, body { width: 100%; min-height: 100%; background: var(--ls-body-bg); color: var(--ls-body-color); font-family: var(--ls-font-family); }
+#longform-content { width: 100%; min-height: 100%; padding: var(--ls-content-padding); line-height: var(--ls-line-height); }
+#longform-content h1 { font-size: var(--ls-h1-size); font-weight: var(--ls-h1-weight); margin: var(--ls-h1-margin); }
+#longform-content h2 { font-size: var(--ls-h2-size); font-weight: var(--ls-h2-weight); margin: var(--ls-h2-margin); }
+#longform-content h3 { font-size: var(--ls-h3-size); font-weight: var(--ls-h3-weight); margin: var(--ls-h3-margin); }
+#longform-content p { margin: var(--ls-p-margin); }
+#longform-content ul, #longform-content ol { margin: var(--ls-list-margin); }
+#longform-content li { margin: var(--ls-li-margin); }
+#longform-content hr { border: none; border-top: var(--ls-hr-border); margin: var(--ls-hr-margin); }
+#longform-content table { width: 100%; border-collapse: collapse; margin: var(--ls-table-margin); }
+#longform-content th, #longform-content td { border: 1px solid var(--ls-table-border); padding: var(--ls-table-cell-padding); text-align: left; }
+#longform-content th { background: var(--ls-table-head-bg); font-weight: 600; }
+#longform-content tr:nth-child(even) { background: var(--ls-table-row-alt-bg); }
+#longform-content blockquote { margin: var(--ls-blockquote-margin); padding: var(--ls-blockquote-padding); border-left: var(--ls-blockquote-border); font-style: italic; color: var(--ls-blockquote-color); }
+#longform-content .callout { margin: var(--ls-callout-margin); padding: var(--ls-callout-padding); border-radius: var(--ls-callout-radius); border-left: var(--ls-callout-border-width) solid; background: var(--ls-callout-bg); }
+#longform-content .callout-title { font-weight: var(--ls-callout-title-weight); margin: var(--ls-callout-title-margin); font-size: var(--ls-callout-title-size); }
+#longform-content .callout-content { font-size: var(--ls-callout-content-size); line-height: var(--ls-callout-content-line-height); }
+#longform-content .callout-note, #longform-content .callout-info, #longform-content .callout-todo { border-left-color: var(--ls-callout-note-color); }
+#longform-content .callout-note > .callout-title, #longform-content .callout-info > .callout-title, #longform-content .callout-todo > .callout-title { color: var(--ls-callout-note-color); }
+#longform-content .callout-tip, #longform-content .callout-hint, #longform-content .callout-important, #longform-content .callout-success, #longform-content .callout-check, #longform-content .callout-done { border-left-color: var(--ls-callout-tip-color); }
+#longform-content .callout-tip > .callout-title, #longform-content .callout-hint > .callout-title, #longform-content .callout-important > .callout-title, #longform-content .callout-success > .callout-title, #longform-content .callout-check > .callout-title, #longform-content .callout-done > .callout-title { color: var(--ls-callout-tip-color); }
+#longform-content .callout-warning, #longform-content .callout-caution, #longform-content .callout-attention { border-left-color: var(--ls-callout-warning-color); }
+#longform-content .callout-warning > .callout-title, #longform-content .callout-caution > .callout-title, #longform-content .callout-attention > .callout-title { color: var(--ls-callout-warning-color); }
+#longform-content .callout-danger, #longform-content .callout-error, #longform-content .callout-bug { border-left-color: var(--ls-callout-danger-color); }
+#longform-content .callout-danger > .callout-title, #longform-content .callout-error > .callout-title, #longform-content .callout-bug > .callout-title { color: var(--ls-callout-danger-color); }
+#longform-content .callout-question, #longform-content .callout-help, #longform-content .callout-faq { border-left-color: var(--ls-callout-question-color); }
+#longform-content .callout-question > .callout-title, #longform-content .callout-help > .callout-title, #longform-content .callout-faq > .callout-title { color: var(--ls-callout-question-color); }
+#longform-content .callout-example, #longform-content .callout-quote { border-left-color: var(--ls-callout-example-color); }
+#longform-content .callout-example > .callout-title, #longform-content .callout-quote > .callout-title { color: var(--ls-callout-example-color); }
+#longform-content img { max-width: 100%; height: auto; display: block; border-radius: 6px; margin: 0.5rem 0; object-fit: contain; }
+#longform-content .image-group { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; align-items: flex-start; margin: 0.5rem 0; }
+#longform-content .image-group img { flex: 1 1 0; min-width: 0; max-width: 48%; margin: 0; }
+#longform-content .image-group img:only-child { flex: 0 0 auto; max-width: 100%; }
+#longform-content pre { background: rgba(0,0,0,0.2); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; max-width: 100%; margin: 0.5rem 0; }
+#longform-content pre code { font-family: 'Fira Code', 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.8rem; line-height: 1.5; background: transparent; padding: 0; }
+#longform-content code { font-family: 'Fira Code', 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.85em; background: rgba(0,0,0,0.15); padding: 0.15rem 0.35rem; border-radius: 4px; }
+#longform-content del { opacity: 0.6; text-decoration: line-through; }
+#longform-content mark { background: rgba(250, 204, 21, 0.3); color: inherit; padding: 0.1em 0.25em; border-radius: 3px; }
+#longform-content u { text-decoration: underline; text-decoration-color: rgba(96, 165, 250, 0.6); text-underline-offset: 3px; }
+#longform-content h4 { font-size: 1.125rem; font-weight: 600; margin: 1rem 0 0.5rem 0; }
+#longform-content h5 { font-size: 1rem; font-weight: 600; margin: 0.875rem 0 0.5rem 0; opacity: 0.9; }
+#longform-content h6 { font-size: 0.875rem; font-weight: 600; margin: 0.75rem 0 0.5rem 0; opacity: 0.8; }
+#longform-content .task-list { list-style: none; margin-left: 0; padding-left: 0; }
+#longform-content .task-list-item { display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.35rem; }
+#longform-content .task-list-item input[type="checkbox"] { margin-top: 0.25rem; accent-color: #60a5fa; }
+#longform-content .math-block { background: rgba(0,0,0,0.15); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; font-family: 'KaTeX_Math', 'Times New Roman', serif; text-align: center; margin: 0.75rem 0; }
 ${options.customCss || ''}
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 </head>
 <body>
 <div id="longform-content">
 ${bodyHtml}
 </div>
+<script>
+(function() {
+  function initMath() {
+    if (typeof renderMathInElement === 'undefined') {
+      setTimeout(initMath, 100);
+      return;
+    }
+    renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ],
+      throwOnError: false
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initMath);
+  } else {
+    initMath();
+  }
+})();
+</script>
 </body>
 </html>`
 }
@@ -321,7 +687,7 @@ async function buildMarpFallbackPage(markdown: string, app: App, pluginDir: stri
 	const slidesHtml = slideTexts
 		.map((text, idx) => {
 			const bodyHtml = markdownToSimpleHTML(text);
-			const pageNum = showPaginate ? `<div style="position:absolute;bottom:16px;right:24px;font-size:12px;opacity:0.5;">${idx + 1} / ${slideTexts.length}</div>` : '';
+			const pageNum = showPaginate ? `<div class="slide-paginate">${idx + 1} / ${slideTexts.length}</div>` : '';
 			return `<div class="slide-wrapper"><section class="slide" data-index="${idx}">${bodyHtml}${pageNum}</section></div>`;
 		})
 		.join('\n');
@@ -333,27 +699,117 @@ async function buildMarpFallbackPage(markdown: string, app: App, pluginDir: stri
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; height: 100%; overflow-x: visible; overflow-y: auto; background: ${bgColor}; color: ${textColor}; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-#marp-deck { width: 100%; min-height: 100%; overflow-x: visible; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem; padding: 1rem; align-items: center; }
-.slide-wrapper { display: flex; overflow: visible; flex-shrink: 0; }
-.slide { position: relative; width: ${fixedWidth}px; height: ${fixedHeight}px; flex-shrink: 0; transform-origin: 0 0; background: rgba(255,255,255,0.03); border-radius: 12px; padding: 3rem 4rem; display: flex; flex-direction: column; justify-content: center; overflow: visible; line-height: 1.75; }
-.slide h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1.5rem; }
-.slide h2 { font-size: 1.75rem; font-weight: 700; margin: 1.5rem 0 1rem; }
-.slide h3 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 0.5rem; }
-.slide p { margin-bottom: 0.75rem; }
-.slide ul, .slide ol { margin-left: 2rem; margin-bottom: 0.75rem; }
-.slide li { margin-bottom: 0.35rem; }
-.slide table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.85rem; }
-.slide th, .slide td { border: 1px solid rgba(255,255,255,0.15); padding: 0.35rem 0.5rem; text-align: left; }
-.slide th { background: rgba(255,255,255,0.08); font-weight: 600; }
-.slide tr:nth-child(even) { background: rgba(255,255,255,0.03); }
-#marp-nav { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 100; }
-#marp-nav button { padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: inherit; cursor: pointer; font-size: 13px; }
-#marp-nav button:hover { background: rgba(255,255,255,0.2); }
-#marp-hint { position: fixed; top: 16px; right: 20px; font-size: 12px; opacity: 0.5; pointer-events: none; animation: fadeOut 3s forwards 2s; }
-@keyframes fadeOut { to { opacity: 0; } }
+:root {
+  --ls-body-bg: ${bgColor};
+  --ls-body-color: ${textColor};
+  --ls-font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ls-deck-gap: 1rem;
+  --ls-deck-padding: 1rem;
+  --ls-slide-padding: 3rem 4rem;
+  --ls-slide-bg: rgba(255,255,255,0.03);
+  --ls-slide-radius: 12px;
+  --ls-slide-line-height: 1.75;
+  --ls-h1-size: 2.5rem;
+  --ls-h1-weight: 800;
+  --ls-h1-margin: 0 0 1.5rem 0;
+  --ls-h2-size: 1.75rem;
+  --ls-h2-weight: 700;
+  --ls-h2-margin: 1.5rem 0 1rem 0;
+  --ls-h3-size: 1.25rem;
+  --ls-h3-weight: 600;
+  --ls-h3-margin: 1rem 0 0.5rem 0;
+  --ls-p-margin: 0 0 0.75rem 0;
+  --ls-list-margin: 0 0 0.75rem 2rem;
+  --ls-li-margin: 0 0 0.35rem 0;
+  --ls-table-font-size: 0.85rem;
+  --ls-table-margin: 0.75rem 0;
+  --ls-table-border: rgba(255,255,255,0.15);
+  --ls-table-cell-padding: 0.35rem 0.5rem;
+  --ls-table-head-bg: rgba(255,255,255,0.08);
+  --ls-table-row-alt-bg: rgba(255,255,255,0.03);
+  --ls-blockquote-margin: 0.5rem 0;
+  --ls-blockquote-padding: 0.4rem 0.6rem;
+  --ls-blockquote-border: 2px solid rgba(255,255,255,0.2);
+  --ls-blockquote-color: rgba(255,255,255,0.8);
+  --ls-blockquote-font-size: 0.85rem;
+  --ls-callout-margin: 0.5rem 0;
+  --ls-callout-padding: 0.4rem 0.6rem;
+  --ls-callout-radius: 6px;
+  --ls-callout-border-width: 3px;
+  --ls-callout-bg: rgba(255,255,255,0.04);
+  --ls-callout-title-size: 0.8rem;
+  --ls-callout-title-weight: 700;
+  --ls-callout-title-margin: 0 0 0.2rem 0;
+  --ls-callout-content-size: 0.75rem;
+  --ls-callout-content-line-height: 1.5;
+  --ls-callout-note-color: #3b82f6;
+  --ls-callout-tip-color: #22c55e;
+  --ls-callout-warning-color: #f59e0b;
+  --ls-callout-danger-color: #ef4444;
+  --ls-callout-question-color: #a855f7;
+  --ls-callout-example-color: #6b7280;
+  --ls-paginate-font-size: 12px;
+  --ls-paginate-bottom: 16px;
+  --ls-paginate-right: 24px;
+  --ls-paginate-opacity: 0.5;
+}
+html, body { width: 100%; height: 100%; overflow-x: visible; overflow-y: auto; }
+body { background: var(--ls-body-bg); color: var(--ls-body-color); font-family: var(--ls-font-family); }
+#marp-deck { width: 100%; min-height: 100%; overflow-x: visible; overflow-y: auto; display: flex; flex-direction: column; gap: var(--ls-deck-gap); padding: var(--ls-deck-padding); align-items: center; }
+.slide-wrapper { display: flex; overflow: hidden; flex-shrink: 0; }
+/* 必须写死的布局引擎（用户不应覆盖） */
+.slide { position: relative; width: ${fixedWidth}px !important; height: ${fixedHeight}px !important; flex-shrink: 0; transform-origin: 0 0; overflow: hidden; }
+/* 视觉样式放在 section 上，用户写 section { ... } 即可覆盖 */
+section { background: var(--ls-slide-bg); border-radius: var(--ls-slide-radius); padding: var(--ls-slide-padding); display: flex; flex-direction: column; justify-content: center; line-height: var(--ls-slide-line-height); }
+section h1 { font-size: var(--ls-h1-size); font-weight: var(--ls-h1-weight); margin: var(--ls-h1-margin); }
+section h2 { font-size: var(--ls-h2-size); font-weight: var(--ls-h2-weight); margin: var(--ls-h2-margin); }
+section h3 { font-size: var(--ls-h3-size); font-weight: var(--ls-h3-weight); margin: var(--ls-h3-margin); }
+section p { margin: var(--ls-p-margin); }
+section ul, section ol { margin: var(--ls-list-margin); }
+section li { margin: var(--ls-li-margin); }
+section table { width: 100%; border-collapse: collapse; margin: var(--ls-table-margin); font-size: var(--ls-table-font-size); }
+section th, section td { border: 1px solid var(--ls-table-border); padding: var(--ls-table-cell-padding); text-align: left; }
+section th { background: var(--ls-table-head-bg); font-weight: 600; }
+section tr:nth-child(even) { background: var(--ls-table-row-alt-bg); }
+section blockquote { margin: var(--ls-blockquote-margin); padding: var(--ls-blockquote-padding); border-left: var(--ls-blockquote-border); font-style: italic; color: var(--ls-blockquote-color); font-size: var(--ls-blockquote-font-size); }
+section .callout { margin: var(--ls-callout-margin); padding: var(--ls-callout-padding); border-radius: var(--ls-callout-radius); border-left: var(--ls-callout-border-width) solid; background: var(--ls-callout-bg); }
+section .callout-title { font-weight: var(--ls-callout-title-weight); margin: var(--ls-callout-title-margin); font-size: var(--ls-callout-title-size); }
+section .callout-content { font-size: var(--ls-callout-content-size); line-height: var(--ls-callout-content-line-height); }
+section .callout-note, section .callout-info, section .callout-todo { border-left-color: var(--ls-callout-note-color); }
+section .callout-note > .callout-title, section .callout-info > .callout-title, section .callout-todo > .callout-title { color: var(--ls-callout-note-color); }
+section .callout-tip, section .callout-hint, section .callout-important, section .callout-success, section .callout-check, section .callout-done { border-left-color: var(--ls-callout-tip-color); }
+section .callout-tip > .callout-title, section .callout-hint > .callout-title, section .callout-important > .callout-title, section .callout-success > .callout-title, section .callout-check > .callout-title, section .callout-done > .callout-title { color: var(--ls-callout-tip-color); }
+section .callout-warning, section .callout-caution, section .callout-attention { border-left-color: var(--ls-callout-warning-color); }
+section .callout-warning > .callout-title, section .callout-caution > .callout-title, section .callout-attention > .callout-title { color: var(--ls-callout-warning-color); }
+section .callout-danger, section .callout-error, section .callout-bug { border-left-color: var(--ls-callout-danger-color); }
+section .callout-danger > .callout-title, section .callout-error > .callout-title, section .callout-bug > .callout-title { color: var(--ls-callout-danger-color); }
+section .callout-question, section .callout-help, section .callout-faq { border-left-color: var(--ls-callout-question-color); }
+section .callout-question > .callout-title, section .callout-help > .callout-title, section .callout-faq > .callout-title { color: var(--ls-callout-question-color); }
+section .callout-example, section .callout-quote { border-left-color: var(--ls-callout-example-color); }
+section .callout-example > .callout-title, section .callout-quote > .callout-title { color: var(--ls-callout-example-color); }
+section img { max-width: 100%; max-height: 280px; height: auto; display: block; border-radius: 6px; margin: 0.5rem auto; object-fit: contain; }
+section .image-group { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; align-items: center; margin: 0.5rem 0; }
+section .image-group img { max-height: 220px; flex: 1 1 0; min-width: 0; margin: 0; }
+section .image-group img:only-child { flex: 0 0 auto; max-width: 100%; max-height: 280px; }
+section pre { background: rgba(0,0,0,0.2); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; overflow-y: auto; max-width: 100%; max-height: 45%; margin: 0.5rem 0; }
+section pre code { font-family: 'Fira Code', 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.8rem; line-height: 1.5; background: transparent; padding: 0; }
+section code { font-family: 'Fira Code', 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.85em; background: rgba(0,0,0,0.15); padding: 0.15rem 0.35rem; border-radius: 4px; }
+section del { opacity: 0.6; text-decoration: line-through; }
+section mark { background: rgba(250, 204, 21, 0.3); color: inherit; padding: 0.1em 0.25em; border-radius: 3px; }
+section u { text-decoration: underline; text-decoration-color: rgba(96, 165, 250, 0.6); text-underline-offset: 3px; }
+section h4 { font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.4rem 0; }
+section h5 { font-size: 1rem; font-weight: 600; margin: 0.65rem 0 0.35rem 0; opacity: 0.9; }
+section h6 { font-size: 0.9rem; font-weight: 600; margin: 0.55rem 0 0.3rem 0; opacity: 0.8; }
+section .task-list { list-style: none; margin-left: 0; padding-left: 0; }
+section .task-list-item { display: flex; align-items: flex-start; gap: 0.4rem; margin-bottom: 0.25rem; font-size: 0.85rem; }
+section .task-list-item input[type="checkbox"] { margin-top: 0.15rem; accent-color: #60a5fa; }
+section .math-block { background: rgba(0,0,0,0.15); padding: 0.5rem 0.75rem; border-radius: 6px; overflow-x: auto; font-family: 'KaTeX_Math', 'Times New Roman', serif; text-align: center; margin: 0.5rem 0; font-size: 0.85rem; }
+.slide-paginate { position: absolute; bottom: var(--ls-paginate-bottom); right: var(--ls-paginate-right); font-size: var(--ls-paginate-font-size); opacity: var(--ls-paginate-opacity); }
 ${customCss}
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 </head>
 <body>
 <div id="marp-deck">
@@ -385,6 +841,28 @@ ${slidesHtml}
     fitSlides();
   }
   setTimeout(fitSlides, 50);
+})();
+</script>
+<script>
+(function() {
+  function initMath() {
+    if (typeof renderMathInElement === 'undefined') {
+      setTimeout(initMath, 100);
+      return;
+    }
+    renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ],
+      throwOnError: false
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initMath);
+  } else {
+    initMath();
+  }
 })();
 </script>
 </body>
@@ -724,15 +1202,342 @@ function getReverseMappingScript(): string {
 </script>`;
 }
 
-/** 将反向映射脚本注入到 HTML 中（在 </body> 前插入） */
-function injectReverseMappingScript(html: string): string {
-	const script = getReverseMappingScript();
+/** 图片交互脚本：支持拖拽移动位置、拖拽手柄调整大小（带边界限制） */
+function getImageInteractionScript(): string {
+	return `<script>
+(function() {
+	'use strict';
+
+	var activeImage = null;
+	var handlesContainer = null;
+	var dragOverlay = null;
+	var isDragging = false;
+	var isResizing = false;
+	var dragStart = { x: 0, y: 0, tx: 0, ty: 0 };
+	var resizeStart = { x: 0, y: 0, w: 0, h: 0, handle: '' };
+
+	function getTransformValues(el) {
+		var style = window.getComputedStyle(el).transform;
+		if (style === 'none') return { x: 0, y: 0 };
+		var m = style.match(/matrix\(([^,]+),[^,]+,[^,]+,[^,]+, *([^,]+), *([^)]+)\)/);
+		if (m) return { x: parseFloat(m[2]) || 0, y: parseFloat(m[3]) || 0 };
+		return { x: 0, y: 0 };
+	}
+
+	/** 获取图片的约束容器（slide 或页面主体） */
+	function getConstraintContainer(img) {
+		return img.closest('section.slide') || img.closest('.slide') || img.closest('#longform-content') || img.closest('section') || document.body;
+	}
+
+	/** 限制拖拽 translate 值，使图片至少保留 minVis 像素在容器内 */
+	function constrainTranslate(img, tx, ty) {
+		var container = getConstraintContainer(img);
+		var cRect = container.getBoundingClientRect();
+		var iRect = img.getBoundingClientRect();
+		var cur = getTransformValues(img);
+		// 图片原始位置（不含当前 transform）
+		var rawLeft = iRect.left - cur.x;
+		var rawTop = iRect.top - cur.y;
+		var minVis = 40;
+		var maxTx = cRect.right - minVis - rawLeft;
+		var minTx = cRect.left + minVis - rawLeft - iRect.width;
+		var maxTy = cRect.bottom - minVis - rawTop;
+		var minTy = cRect.top + minVis - rawTop - iRect.height;
+		return {
+			x: Math.max(minTx, Math.min(maxTx, tx)),
+			y: Math.max(minTy, Math.min(maxTy, ty))
+		};
+	}
+
+	/** 限制 resize 尺寸（强制保持比例），不超过容器边界 */
+	function constrainResize(img, w, h, aspect) {
+		var container = getConstraintContainer(img);
+		var cRect = container.getBoundingClientRect();
+		var minSize = 40;
+		var maxW = Math.round(cRect.width);
+		var maxH = Math.round(cRect.height);
+
+		// 限制最小尺寸
+		if (w < minSize) { w = minSize; h = w / aspect; }
+		if (h < minSize) { h = minSize; w = h * aspect; }
+		// 限制最大尺寸
+		if (w > maxW) { w = maxW; h = w / aspect; }
+		if (h > maxH) { h = maxH; w = h * aspect; }
+		// 限制后可能再次超出最小，重新兜底
+		if (w < minSize) { w = minSize; h = w / aspect; }
+		if (h < minSize) { h = minSize; w = h * aspect; }
+
+		return { w: w, h: h };
+	}
+
+	/** 判断点 (x,y) 是否在元素 el 的 bounding rect 内（含 10px 边缘容错） */
+	function isPointInEl(x, y, el) {
+		if (!el) return false;
+		var r = el.getBoundingClientRect();
+		var tolerance = 10;
+		return x >= r.left - tolerance && x <= r.right + tolerance &&
+		       y >= r.top - tolerance && y <= r.bottom + tolerance;
+	}
+
+	function createDragOverlay() {
+		if (dragOverlay) return;
+		dragOverlay = document.createElement('div');
+		dragOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:9998;cursor:grabbing;display:none;';
+		document.body.appendChild(dragOverlay);
+	}
+
+	function createHandles() {
+		if (handlesContainer) return;
+		handlesContainer = document.createElement('div');
+		handlesContainer.className = 'lumislate-img-handles';
+		var positions = ['nw','n','ne','e','se','s','sw','w'];
+		var cursors = {
+			nw: 'nw-resize', n: 'ns-resize', ne: 'ne-resize',
+			e: 'ew-resize', se: 'se-resize', s: 'ns-resize',
+			sw: 'sw-resize', w: 'ew-resize'
+		};
+		positions.forEach(function(pos) {
+			var h = document.createElement('div');
+			h.className = 'lumislate-handle lumislate-handle-' + pos;
+			h.dataset.handle = pos;
+			var size = 14;
+			var half = size / 2;
+			var base = 'position:absolute;width:'+size+'px;height:'+size+'px;background:#3b82f6;border:2px solid #fff;border-radius:50%;pointer-events:auto;cursor:'+cursors[pos]+';box-shadow:0 1px 4px rgba(0,0,0,0.4);transition:transform 0.1s,background 0.1s;';
+			switch(pos) {
+				case 'nw': h.style.cssText = base + 'top:-'+half+'px;left:-'+half+'px;'; break;
+				case 'n':  h.style.cssText = base + 'top:-'+half+'px;left:50%;transform:translateX(-50%);'; break;
+				case 'ne': h.style.cssText = base + 'top:-'+half+'px;right:-'+half+'px;'; break;
+				case 'e':  h.style.cssText = base + 'top:50%;right:-'+half+'px;transform:translateY(-50%);'; break;
+				case 'se': h.style.cssText = base + 'bottom:-'+half+'px;right:-'+half+'px;'; break;
+				case 's':  h.style.cssText = base + 'bottom:-'+half+'px;left:50%;transform:translateX(-50%);'; break;
+				case 'sw': h.style.cssText = base + 'bottom:-'+half+'px;left:-'+half+'px;'; break;
+				case 'w':  h.style.cssText = base + 'top:50%;left:-'+half+'px;transform:translateY(-50%);'; break;
+			}
+			handlesContainer.appendChild(h);
+		});
+		document.body.appendChild(handlesContainer);
+	}
+
+	function updateHandlesPosition() {
+		if (!activeImage || !handlesContainer) return;
+		var rect = activeImage.getBoundingClientRect();
+		handlesContainer.style.left = rect.left + 'px';
+		handlesContainer.style.top = rect.top + 'px';
+		handlesContainer.style.width = rect.width + 'px';
+		handlesContainer.style.height = rect.height + 'px';
+		handlesContainer.style.display = 'block';
+	}
+
+	function activateImage(img) {
+		if (activeImage === img) return;
+		deactivateImage();
+		activeImage = img;
+		img.classList.remove('lumislate-img-hover');
+		img.classList.add('lumislate-img-active');
+
+		var computedPos = window.getComputedStyle(img).position;
+		if (computedPos === 'static') {
+			img.style.position = 'relative';
+		}
+
+		createHandles();
+		createDragOverlay();
+		updateHandlesPosition();
+	}
+
+	function deactivateImage() {
+		if (!activeImage) return;
+		activeImage.classList.remove('lumislate-img-active');
+		activeImage.classList.remove('lumislate-img-hover');
+		activeImage = null;
+		if (handlesContainer) handlesContainer.style.display = 'none';
+		if (dragOverlay) dragOverlay.style.display = 'none';
+		isDragging = false;
+		isResizing = false;
+	}
+
+	// 注入样式
+	var style = document.createElement('style');
+	style.textContent = '.lumislate-img-hover{outline:2px dashed #3b82f6;outline-offset:2px;cursor:grab;} .lumislate-img-active{outline:2px solid #3b82f6;outline-offset:2px;cursor:grab;} .lumislate-img-handles{position:fixed;z-index:9999;display:none;pointer-events:none;} .lumislate-handle:hover{background:#60a5fa;transform:scale(1.2);}';
+	document.head.appendChild(style);
+
+	// mouseover: 给图片添加 hover 效果
+	document.body.addEventListener('mouseover', function(e) {
+		if (isDragging || isResizing) return;
+		var img = e.target.closest('img');
+		if (img && img !== activeImage) {
+			img.classList.add('lumislate-img-hover');
+		}
+	}, true);
+
+	document.body.addEventListener('mouseout', function(e) {
+		var img = e.target.closest('img');
+		if (img && img !== activeImage) {
+			img.classList.remove('lumislate-img-hover');
+		}
+	}, true);
+
+	// click: 激活/取消图片编辑
+	document.body.addEventListener('click', function(e) {
+		var handle = e.target.closest('.lumislate-handle');
+		if (handle) {
+			e.stopPropagation();
+			return;
+		}
+
+		var img = e.target.closest('img');
+		if (img) {
+			e.stopPropagation();
+			e.preventDefault();
+			activateImage(img);
+			return;
+		}
+
+		// 点击空白处（且不在 activeImage 范围内）则退出
+		if (!isPointInEl(e.clientX, e.clientY, activeImage)) {
+			deactivateImage();
+		}
+	}, true);
+
+	// mousedown: 开始拖拽或调整大小
+	document.body.addEventListener('mousedown', function(e) {
+		// 优先检测手柄（resize）
+		var handle = e.target.closest('.lumislate-handle');
+		if (handle && activeImage) {
+			isResizing = true;
+			resizeStart = {
+				x: e.clientX, y: e.clientY,
+				w: activeImage.offsetWidth,
+				h: activeImage.offsetHeight,
+				handle: handle.dataset.handle
+			};
+			e.preventDefault();
+			e.stopPropagation();
+			return;
+		}
+
+		// 检测是否在 activeImage 区域内（支持 pointer-events 穿透场景）
+		if (activeImage && isPointInEl(e.clientX, e.clientY, activeImage)) {
+			isDragging = true;
+			var tv = getTransformValues(activeImage);
+			dragStart = { x: e.clientX, y: e.clientY, tx: tv.x, ty: tv.y };
+			activeImage.style.cursor = 'grabbing';
+			if (dragOverlay) dragOverlay.style.display = 'block';
+			e.preventDefault();
+			e.stopPropagation();
+			return;
+		}
+
+		// 点击非 activeImage 区域，取消激活
+		if (activeImage && !isPointInEl(e.clientX, e.clientY, activeImage)) {
+			deactivateImage();
+		}
+	}, true);
+
+	// mousemove: 拖拽或调整大小中
+	document.body.addEventListener('mousemove', function(e) {
+		if (isDragging && activeImage) {
+			var dx = e.clientX - dragStart.x;
+			var dy = e.clientY - dragStart.y;
+			var rawTx = dragStart.tx + dx;
+			var rawTy = dragStart.ty + dy;
+			var constrained = constrainTranslate(activeImage, rawTx, rawTy);
+			activeImage.style.transform = 'translate(' + constrained.x + 'px, ' + constrained.y + 'px)';
+			updateHandlesPosition();
+			return;
+		}
+
+		if (isResizing && activeImage) {
+			var dx = e.clientX - resizeStart.x;
+			var dy = e.clientY - resizeStart.y;
+			var aspect = resizeStart.w / resizeStart.h;
+			var handle = resizeStart.handle;
+			var newW, newH;
+
+			// 强制等比例 resize：根据手柄方向选择基准轴
+			if (handle === 'n' || handle === 's') {
+				// 垂直手柄：以高度变化为准
+				newH = resizeStart.h + (handle === 's' ? dy : -dy);
+				newW = newH * aspect;
+			} else if (handle === 'e' || handle === 'w') {
+				// 水平手柄：以宽度变化为准
+				newW = resizeStart.w + (handle === 'e' ? dx : -dx);
+				newH = newW / aspect;
+			} else {
+				// 角点：取鼠标移动绝对值较大的方向为基准
+				var ddx = (handle.indexOf('e') !== -1) ? dx : -dx;
+				var ddy = (handle.indexOf('s') !== -1) ? dy : -dy;
+				if (Math.abs(ddx) >= Math.abs(ddy)) {
+					newW = resizeStart.w + ddx;
+					newH = newW / aspect;
+				} else {
+					newH = resizeStart.h + ddy;
+					newW = newH * aspect;
+				}
+			}
+
+			var constrained = constrainResize(activeImage, newW, newH, aspect);
+			var rw = Math.round(constrained.w) + 'px';
+			var rh = Math.round(constrained.h) + 'px';
+			activeImage.style.width = rw;
+			activeImage.style.height = rh;
+			activeImage.style.maxWidth = rw;
+			activeImage.style.maxHeight = rh;
+			updateHandlesPosition();
+		}
+	}, true);
+
+	// mouseup: 结束操作
+	document.body.addEventListener('mouseup', function(e) {
+		if (isDragging) {
+			isDragging = false;
+			if (activeImage) activeImage.style.cursor = 'grab';
+			if (dragOverlay) dragOverlay.style.display = 'none';
+		}
+		if (isResizing) {
+			isResizing = false;
+		}
+	}, true);
+
+	// Escape 取消
+	document.addEventListener('keydown', function(e) {
+		if (e.key === 'Escape' && activeImage) {
+			deactivateImage();
+		}
+	});
+
+	// 滚动/resize 时更新手柄位置
+	window.addEventListener('scroll', function() {
+		if (activeImage) updateHandlesPosition();
+	}, true);
+	window.addEventListener('resize', function() {
+		if (activeImage) updateHandlesPosition();
+	});
+
+	// 观察图片加载完成，更新手柄位置
+	var imgObserver = new MutationObserver(function(mutations) {
+		if (activeImage && !activeImage.complete) {
+			activeImage.addEventListener('load', function onLoad() {
+				activeImage.removeEventListener('load', onLoad);
+				updateHandlesPosition();
+			});
+		}
+	});
+	imgObserver.observe(document.body, { childList: true, subtree: true });
+})();
+</script>`;
+}
+
+/** 将所有交互脚本（反向映射 + 图片交互）注入到 HTML 中（在 </body> 前插入） */
+function injectInteractionScripts(html: string): string {
+	const rmScript = getReverseMappingScript();
+	const imgScript = getImageInteractionScript();
 	const bodyClose = html.lastIndexOf('</body>');
 	if (bodyClose !== -1) {
-		return html.slice(0, bodyClose) + script + '\n' + html.slice(bodyClose);
+		return html.slice(0, bodyClose) + rmScript + '\n' + imgScript + '\n' + html.slice(bodyClose);
 	}
 	// 如果没有 </body>，直接在末尾追加（流式预览时常见）
-	return html + '\n' + script + '\n</body>\n</html>';
+	return html + '\n' + rmScript + '\n' + imgScript + '\n</body>\n</html>';
 }
 
 // ============================================================
@@ -1421,6 +2226,9 @@ export default class LumiSlatePlugin extends Plugin {
 		const theme = extractFrontmatterValue(frontmatter, 'lumislate_theme');
 		const prompt = extractFrontmatterValue(frontmatter, 'lumislate_prompt');
 
+		// 解析 Vault 内图片路径为可访问 URL
+		const resolvedMarkdown = resolveImagePaths(markdown, this.app, notePath);
+
 		await this.activateView();
 
 		const view = this.getLumiSlateView();
@@ -1433,18 +2241,18 @@ export default class LumiSlatePlugin extends Plugin {
 
 		// Marp 模式：实时渲染，不缓存
 		if (mode === 'marp') {
-			const html = await buildMarpFallbackPage(markdown, this.app, this.manifest.dir);
-			view.renderCanvas(html);
-			new Notice('LumiSlate：Marp 模式已渲染');
+			const html = await buildMarpFallbackPage(resolvedMarkdown, this.app, this.manifest.dir);
+			const injected = injectInteractionScripts(html);
+			view.renderCanvas(injected);
 			await this.refreshViewContext();
 			return;
 		}
 
-		// Design 模式：优先读取缓存
+		// Design 模式：优先读取缓存（缓存键仍用原始 markdown，保证一致性）
 		let html = notePath ? await this.cacheManager.readCache(notePath, markdown, prompt) : null;
 
 		if (!html) {
-			const bodyHtml = markdownToSimpleHTML(markdown);
+			const bodyHtml = markdownToSimpleHTML(resolvedMarkdown);
 			html = buildHTMLPage(bodyHtml);
 			if (notePath) {
 				await this.cacheManager.writeCache(notePath, html, markdown, theme, prompt);
@@ -1454,7 +2262,8 @@ export default class LumiSlatePlugin extends Plugin {
 			new Notice('LumiSlate：已从缓存恢复画布');
 		}
 
-		view.renderCanvas(html);
+		const injected = injectInteractionScripts(html);
+		view.renderCanvas(injected);
 		await this.refreshViewContext();
 	}
 
@@ -1547,7 +2356,7 @@ export default class LumiSlatePlugin extends Plugin {
 					this.updateMetricsDisplay();
 				}
 				const preview = previewHtml(this.aiAccumulated);
-				const injected = injectReverseMappingScript(preview);
+				const injected = injectInteractionScripts(preview);
 				view.renderCanvas(injected);
 			};
 
@@ -1565,7 +2374,7 @@ export default class LumiSlatePlugin extends Plugin {
 					return;
 				}
 
-				const finalHtml = injectReverseMappingScript(this.aiAccumulated);
+				const finalHtml = injectInteractionScripts(this.aiAccumulated);
 				view.renderCanvas(finalHtml);
 				view.setStatus('渲染完成');
 				view.setExportEnabled(true);
@@ -1601,7 +2410,7 @@ export default class LumiSlatePlugin extends Plugin {
 						onHtml: (text) => {
 							// Agent 通过 Write 工具输出的完整 HTML，直接替换
 							this.aiAccumulated = text;
-							const injected = injectReverseMappingScript(text);
+							const injected = injectInteractionScripts(text);
 							view.renderCanvas(injected);
 						},
 						onMeta: (key, value) => {
@@ -1802,7 +2611,170 @@ export default class LumiSlatePlugin extends Plugin {
 		await this.renderCurrentNote();
 	}
 
-	/** 显示 Marp CSS 编辑弹窗 — 左右分栏：左侧文件列表，右侧代码编辑 */
+	/** CSS 系统提示词 JSON 文件路径 */
+	private getCssPromptFilePath(): string {
+		return `${this.manifest.dir}/css-system-prompt.json`;
+	}
+
+	/** 从 JSON 文件读取自定义 CSS 系统提示词，失败则返回默认 */
+	private async loadCssSystemPrompt(): Promise<string> {
+		const filePath = this.getCssPromptFilePath();
+		try {
+			const raw = await this.app.vault.adapter.read(filePath);
+			const data = JSON.parse(raw);
+			if (typeof data.systemPrompt === 'string' && data.systemPrompt.trim()) {
+				return data.systemPrompt.trim();
+			}
+		} catch {
+			// 文件不存在或解析失败，使用默认
+		}
+		return DEFAULT_CSS_SYSTEM_PROMPT;
+	}
+
+	/** 组装完整的 CSS 系统提示词 */
+	private async getCssSystemPrompt(currentCss: string): Promise<string> {
+		const ruleBody = await this.loadCssSystemPrompt();
+
+		return `你是 LumiSlate 插件的 CSS 设计专家，专门帮助用户为 Marp 幻灯片模式编写自定义 CSS。
+
+## 当前 CSS 代码
+\`\`\`css
+${currentCss || '/* 当前为空 */'}
+\`\`\`
+
+${ruleBody}`;
+	}
+
+	/** 在 Obsidian 中打开 CSS 系统提示词 JSON 文件 */
+	async openCssSystemPromptFile(): Promise<void> {
+		const filePath = this.getCssPromptFilePath();
+
+		// 如果文件不存在，用默认内容创建
+		const exists = await this.app.vault.adapter.exists(filePath);
+		if (!exists) {
+			const defaultData = {
+				version: 1,
+				systemPrompt: DEFAULT_CSS_SYSTEM_PROMPT,
+			};
+			await this.app.vault.adapter.write(filePath, JSON.stringify(defaultData, null, 2));
+			new Notice('已创建默认提示词文件');
+		}
+
+		// 用 Obsidian 打开文件
+		const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
+		if (abstractFile instanceof TFile) {
+			const leaf = this.app.workspace.getLeaf();
+			await leaf.openFile(abstractFile);
+		} else {
+			// 如果 Obsidian 文件系统未识别，用系统方式打开
+			new Notice('文件已创建，请手动在 .obsidian/plugins/obsidian-lumislate/ 目录中编辑 css-system-prompt.json');
+		}
+	}
+
+	/** 在 AI 聊天面板中追加消息 */
+	private appendAiChatMessage(chatEl: HTMLElement, role: 'user' | 'ai', text: string): void {
+		const msg = chatEl.createEl('div', { cls: `lumislate-css-ai-msg lumislate-css-ai-msg-${role}` });
+		msg.createEl('div', { cls: 'lumislate-css-ai-msg-role', text: role === 'user' ? '你' : 'AI' });
+		const content = msg.createEl('div', { cls: 'lumislate-css-ai-msg-content' });
+		content.textContent = text;
+		chatEl.scrollTop = chatEl.scrollHeight;
+	}
+
+	/** 发送 AI CSS 辅助请求 */
+	private async sendAiCssAssist(
+		userPrompt: string,
+		currentCss: string,
+		chatEl: HTMLElement,
+		textArea: TextAreaComponent,
+		statusEl: HTMLElement,
+	): Promise<void> {
+		const resolved = this.resolveAIProvider();
+		if (resolved.provider === 'http' && !this.settings.apiKey) {
+			this.appendAiChatMessage(chatEl, 'ai', '错误：未配置 AI。请在设置中选择本地 Agent 或配置 HTTP API Key。');
+			return;
+		}
+
+		this.appendAiChatMessage(chatEl, 'user', userPrompt);
+		statusEl.textContent = '思考中…';
+		statusEl.addClass('lumislate-css-ai-status-active');
+
+		const systemPrompt = await this.getCssSystemPrompt(currentCss);
+		const fullPrompt = `${systemPrompt}\n\n## 用户的请求\n${userPrompt}\n\n请输出修改后的完整 CSS 代码：`;
+
+		let cssResult = '';
+		const ctl = new AbortController();
+		this.aiAbortCtl = ctl;
+
+		// 创建 AI 回复消息的流式容器
+		const msg = chatEl.createEl('div', { cls: 'lumislate-css-ai-msg lumislate-css-ai-msg-ai' });
+		msg.createEl('div', { cls: 'lumislate-css-ai-msg-role', text: 'AI' });
+		const content = msg.createEl('div', { cls: 'lumislate-css-ai-msg-content' });
+		const applyBtn = msg.createEl('button', { text: '应用此 CSS', cls: 'lumislate-btn lumislate-btn-primary lumislate-btn-small' });
+		applyBtn.style.marginTop = '8px';
+		applyBtn.style.display = 'none';
+
+		try {
+			await compileWithAI(
+				fullPrompt,
+				{
+					provider: resolved.provider,
+					agentId: resolved.agentId,
+					binOverride: this.settings.localAgentBinOverride,
+					llmConfig: {
+						apiKey: this.settings.apiKey,
+						baseURL: this.settings.apiBaseUrl,
+						model: this.settings.model,
+					},
+					model: resolved.provider === 'local' ? undefined : this.settings.model,
+					signal: ctl.signal,
+				},
+				{
+					onDelta: (text) => {
+						cssResult += text;
+						content.textContent = cssResult;
+						chatEl.scrollTop = chatEl.scrollHeight;
+					},
+					onHtml: (text) => {
+						cssResult = text;
+						content.textContent = cssResult;
+						chatEl.scrollTop = chatEl.scrollHeight;
+					},
+					onMeta: () => {},
+					onStderr: () => {},
+					onError: (err) => {
+						content.textContent = `错误：${err}`;
+						statusEl.textContent = '';
+						statusEl.removeClass('lumislate-css-ai-status-active');
+					},
+					onDone: () => {
+						this.aiAbortCtl = null;
+						statusEl.textContent = '';
+						statusEl.removeClass('lumislate-css-ai-status-active');
+						// 清理可能的 markdown 围栏
+						let cleanCss = cssResult;
+						const fenceMatch = cleanCss.match(/```(?:css)?\s*([\s\S]*?)```/);
+						if (fenceMatch) cleanCss = fenceMatch[1].trim();
+						if (cleanCss) {
+							cssResult = cleanCss;
+							content.textContent = cssResult;
+							applyBtn.style.display = 'inline-flex';
+							applyBtn.onclick = () => {
+								textArea.setValue(cssResult);
+								new Notice('AI 生成的 CSS 已应用到编辑器');
+							};
+						}
+					},
+				}
+			);
+		} catch (err) {
+			this.aiAbortCtl = null;
+			content.textContent = `请求失败：${String((err as Error)?.message ?? err)}`;
+			statusEl.textContent = '';
+			statusEl.removeClass('lumislate-css-ai-status-active');
+		}
+	}
+
+	/** 显示 Marp CSS 编辑弹窗 — 三栏：左侧文件列表，中间代码编辑，右侧 AI 助手 */
 	async showMarpCssModal(): Promise<void> {
 		const cssDir = `${this.manifest.dir}/css`;
 
@@ -1839,19 +2811,19 @@ export default class LumiSlatePlugin extends Plugin {
 
 		const fileListEl = leftPanel.createEl('div', { cls: 'lumislate-css-file-list' });
 
-		// ===== 右侧面板：代码编辑 =====
-		const rightPanel = wrap.createEl('div', { cls: 'lumislate-css-right' });
+		// ===== 中间面板：代码编辑 =====
+		const centerPanel = wrap.createEl('div', { cls: 'lumislate-css-center' });
 
-		const pathLabel = rightPanel.createEl('div', { cls: 'lumislate-css-path' });
+		const pathLabel = centerPanel.createEl('div', { cls: 'lumislate-css-path' });
 		pathLabel.textContent = cssDir;
 
-		const textArea = new TextAreaComponent(rightPanel)
+		const textArea = new TextAreaComponent(centerPanel)
 			.setPlaceholder('/* 选择左侧预设或新建 CSS 文件 */')
 			.setValue('');
 		textArea.inputEl.addClass('lumislate-css-textarea');
 
 		// 底部操作栏
-		const btnWrap = rightPanel.createEl('div', { cls: 'lumislate-css-right-actions' });
+		const btnWrap = centerPanel.createEl('div', { cls: 'lumislate-css-right-actions' });
 		const deleteBtn = btnWrap.createEl('button', { cls: 'lumislate-btn lumislate-btn-danger lumislate-btn-small' });
 		setIcon(deleteBtn, 'trash-2');
 		deleteBtn.appendText(' 删除');
@@ -1864,12 +2836,149 @@ export default class LumiSlatePlugin extends Plugin {
 		setIcon(applyBtn, 'check');
 		applyBtn.appendText(' 应用到笔记');
 
+		// ===== 右侧面板：AI 助手 =====
+		const rightPanel = wrap.createEl('div', { cls: 'lumislate-css-right' });
+
+		// AI 头部
+		const aiHeader = rightPanel.createEl('div', { cls: 'lumislate-css-ai-header' });
+		aiHeader.createEl('span', { text: 'AI 助手', cls: 'lumislate-css-ai-title' });
+		const aiStatus = aiHeader.createEl('span', { cls: 'lumislate-css-ai-status' });
+
+		// AI 聊天区域
+		const aiChat = rightPanel.createEl('div', { cls: 'lumislate-css-ai-chat' });
+		// 初始提示消息
+		const welcomeMsg = aiChat.createEl('div', { cls: 'lumislate-css-ai-msg lumislate-css-ai-msg-ai' });
+		welcomeMsg.createEl('div', { cls: 'lumislate-css-ai-msg-role', text: 'AI' });
+		welcomeMsg.createEl('div', {
+			cls: 'lumislate-css-ai-msg-content',
+			text: '你好！我可以帮你调整 CSS 样式。描述你想要的视觉效果，我会生成合适的 CSS 代码。',
+		});
+
+		// AI 输入区
+		const aiInputWrap = rightPanel.createEl('div', { cls: 'lumislate-css-ai-input-wrap' });
+		const aiInput = aiInputWrap.createEl('textarea', { cls: 'lumislate-css-ai-input' });
+		aiInput.placeholder = '描述你想要的样式，例如：把背景改成浅色渐变，标题用深蓝色…';
+		aiInput.rows = 2;
+		const aiSendBtn = aiInputWrap.createEl('button', { cls: 'lumislate-btn lumislate-btn-primary lumislate-btn-small' });
+		setIcon(aiSendBtn, 'send');
+		aiSendBtn.style.marginTop = '6px';
+		aiSendBtn.style.alignSelf = 'flex-end';
+
+		// AI 发送
+		const doSend = () => {
+			const prompt = aiInput.value.trim();
+			if (!prompt) return;
+			this.sendAiCssAssist(prompt, textArea.getValue(), aiChat, textArea, aiStatus);
+			aiInput.value = '';
+		};
+		aiSendBtn.addEventListener('click', doSend);
+		aiInput.addEventListener('keydown', (ev) => {
+			if (ev.key === 'Enter' && !ev.shiftKey) {
+				ev.preventDefault();
+				doSend();
+			}
+		});
+
 		// 状态变量
 		let cssFiles: string[] = [];
 		let selectedFile: string | null = null;
 		let hasUnsavedChanges = false;
 
 		const getFilePath = (name: string) => `${cssDir}/${name}`;
+
+		/** 开始重命名文件项 */
+		const startRename = (itemEl: HTMLElement, file: string) => {
+			fileListEl.querySelectorAll('.lumislate-css-rename-input').forEach((el) => el.remove());
+			itemEl.empty();
+			itemEl.addClass('active');
+			const input = itemEl.createEl('input', {
+				cls: 'lumislate-css-rename-input',
+				value: file,
+			});
+			input.focus();
+			input.select();
+
+			const doRename = async () => {
+				const newName = input.value.trim();
+				input.remove();
+				if (!newName || newName === file) {
+					refreshFileList();
+					return;
+				}
+				const finalName = newName.endsWith('.css') ? newName : `${newName}.css`;
+				if (finalName === file) {
+					refreshFileList();
+					return;
+				}
+				const oldPath = getFilePath(file);
+				const newPath = getFilePath(finalName);
+				const exists = await this.app.vault.adapter.exists(newPath);
+				if (exists) {
+					new Notice('该文件名已存在');
+					refreshFileList();
+					return;
+				}
+				const content = await this.app.vault.adapter.read(oldPath).catch(() => '');
+				await this.app.vault.adapter.write(newPath, content);
+				await this.app.vault.adapter.remove(oldPath);
+				if (selectedFile === file) {
+					selectedFile = finalName;
+				}
+				new Notice(`已重命名为 ${finalName}`);
+				await refreshFileList();
+			};
+
+			input.addEventListener('keydown', (ev) => {
+				if (ev.key === 'Enter') { ev.preventDefault(); doRename(); }
+				if (ev.key === 'Escape') { itemEl.empty(); itemEl.setText(file); }
+			});
+			input.addEventListener('blur', () => doRename());
+		};
+
+		/** 显示文件右键菜单 */
+		const showFileContextMenu = (e: MouseEvent, file: string, itemEl: HTMLElement) => {
+			// 清除已有的菜单
+			document.querySelectorAll('.lumislate-context-menu').forEach((el) => el.remove());
+
+			const menu = document.createElement('div');
+			menu.addClass('lumislate-context-menu');
+			menu.style.left = `${e.pageX}px`;
+			menu.style.top = `${e.pageY}px`;
+
+			const renameItem = menu.createEl('div', { cls: 'lumislate-context-menu-item', text: '重命名' });
+			setIcon(renameItem.createSpan(), 'pencil');
+			renameItem.addEventListener('click', () => {
+				menu.remove();
+				startRename(itemEl, file);
+			});
+
+			const deleteItem = menu.createEl('div', { cls: 'lumislate-context-menu-item danger', text: '删除' });
+			setIcon(deleteItem.createSpan(), 'trash-2');
+			deleteItem.addEventListener('click', async () => {
+				menu.remove();
+				if (!confirm(`确定要删除 ${file} 吗？`)) return;
+				await this.app.vault.adapter.remove(getFilePath(file));
+				if (selectedFile === file) {
+					selectedFile = null;
+					hasUnsavedChanges = false;
+					textArea.setValue('');
+				}
+				await refreshFileList();
+				new Notice('已删除');
+			});
+
+			document.body.appendChild(menu);
+
+			// 点击外部关闭菜单
+			const closeMenu = (ev: MouseEvent) => {
+				if (!menu.contains(ev.target as Node)) {
+					menu.remove();
+					document.removeEventListener('click', closeMenu);
+				}
+			};
+			// 延迟绑定，避免当前点击立即触发关闭
+			setTimeout(() => document.addEventListener('click', closeMenu), 0);
+		};
 
 		const refreshFileList = async () => {
 			fileListEl.empty();
@@ -1900,7 +3009,7 @@ export default class LumiSlatePlugin extends Plugin {
 					item.addClass('active');
 				}
 
-				// 左键选择
+				// 单击选择
 				item.addEventListener('click', async () => {
 					if (hasUnsavedChanges) {
 						newFileWrap.style.display = 'none';
@@ -1914,7 +3023,17 @@ export default class LumiSlatePlugin extends Plugin {
 					refreshFileList();
 				});
 
-				// 右键重命名
+				// 双击重命名
+				item.addEventListener('dblclick', (e) => {
+					e.stopPropagation();
+					if (hasUnsavedChanges) {
+						new Notice('请先保存当前修改');
+						return;
+					}
+					startRename(item, file);
+				});
+
+				// 右键弹出菜单（重命名 + 删除）
 				item.addEventListener('contextmenu', (e) => {
 					e.preventDefault();
 					e.stopPropagation();
@@ -1922,53 +3041,7 @@ export default class LumiSlatePlugin extends Plugin {
 						new Notice('请先保存当前修改');
 						return;
 					}
-					// 清除其他重命名输入框
-					fileListEl.querySelectorAll('.lumislate-css-rename-input').forEach((el) => el.remove());
-
-					item.empty();
-					item.addClass('active');
-					const input = item.createEl('input', {
-						cls: 'lumislate-css-rename-input',
-						value: file,
-					});
-					input.focus();
-					input.select();
-
-					const doRename = async () => {
-						const newName = input.value.trim();
-						input.remove();
-						if (!newName || newName === file) {
-							refreshFileList();
-							return;
-						}
-						const finalName = newName.endsWith('.css') ? newName : `${newName}.css`;
-						if (finalName === file) {
-							refreshFileList();
-							return;
-						}
-						const oldPath = getFilePath(file);
-						const newPath = getFilePath(finalName);
-						const exists = await this.app.vault.adapter.exists(newPath);
-						if (exists) {
-							new Notice('该文件名已存在');
-							refreshFileList();
-							return;
-						}
-						const content = await this.app.vault.adapter.read(oldPath).catch(() => '');
-						await this.app.vault.adapter.write(newPath, content);
-						await this.app.vault.adapter.remove(oldPath);
-						if (selectedFile === file) {
-							selectedFile = finalName;
-						}
-						new Notice(`已重命名为 ${finalName}`);
-						await refreshFileList();
-					};
-
-					input.addEventListener('keydown', (ev) => {
-						if (ev.key === 'Enter') { ev.preventDefault(); doRename(); }
-						if (ev.key === 'Escape') { item.empty(); item.setText(file); }
-					});
-					input.addEventListener('blur', () => doRename());
+					showFileContextMenu(e, file, item);
 				});
 			}
 		};
@@ -1988,7 +3061,7 @@ export default class LumiSlatePlugin extends Plugin {
 			newFileWrap.style.display = 'none';
 		});
 
-		newFileConfirm.addEventListener('click', async () => {
+		const doCreateFile = async () => {
 			const raw = newFileInput.value.trim();
 			if (!raw) return;
 			const fileName = raw.endsWith('.css') ? raw : `${raw}.css`;
@@ -2005,7 +3078,19 @@ export default class LumiSlatePlugin extends Plugin {
 			newFileWrap.style.display = 'none';
 			await refreshFileList();
 			new Notice(`已创建 ${fileName}`);
+		};
+
+		newFileInput.addEventListener('keydown', (ev) => {
+			if (ev.key === 'Enter') {
+				ev.preventDefault();
+				doCreateFile();
+			}
+			if (ev.key === 'Escape') {
+				newFileWrap.style.display = 'none';
+			}
 		});
+
+		newFileConfirm.addEventListener('click', doCreateFile);
 
 		// 保存
 		saveBtn.addEventListener('click', async () => {
