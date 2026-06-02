@@ -7,6 +7,52 @@ export interface PreprocessState {
 	skillId: string | null;
 }
 
+/** 特殊语法检测结果 */
+export interface SpecialSyntaxInfo {
+	hasMermaid: boolean;
+	hasLatex: boolean;
+	/** 提取到的 mermaid 代码块内容（去首尾空） */
+	mermaidBlocks: string[];
+	/** 提取到的行间 LaTeX 公式内容（去首尾空，不含 $$） */
+	latexBlocks: string[];
+}
+
+/** 检测 Markdown 正文中是否包含 Mermaid 图表和 LaTeX 数学公式 */
+export function detectSpecialSyntax(body: string): SpecialSyntaxInfo {
+	const result: SpecialSyntaxInfo = {
+		hasMermaid: false,
+		hasLatex: false,
+		mermaidBlocks: [],
+		latexBlocks: [],
+	};
+
+	// 1. 检测 Mermaid 代码块
+	const mermaidRegex = /```mermaid\s*\n([\s\S]*?)```/g;
+	let match: RegExpExecArray | null;
+	while ((match = mermaidRegex.exec(body)) !== null) {
+		result.hasMermaid = true;
+		result.mermaidBlocks.push(match[1].trim());
+	}
+
+	// 2. 检测行间 LaTeX 公式 $$...$$
+	const blockLatexRegex = /\$\$([\s\S]*?)\$\$/g;
+	while ((match = blockLatexRegex.exec(body)) !== null) {
+		result.hasLatex = true;
+		result.latexBlocks.push(match[1].trim());
+	}
+
+	// 3. 检测行内 LaTeX 公式 $...$（排除已被 $$ 匹配的部分）
+	// 先将 $$...$$ 块替换为占位符，避免误匹配
+	const bodyWithoutBlockLatex = body.replace(/\$\$[\s\S]*?\$\$/g, '');
+	const inlineLatexRegex = /\$([^\$\n]+?)\$/g;
+	while ((match = inlineLatexRegex.exec(bodyWithoutBlockLatex)) !== null) {
+		result.hasLatex = true;
+		break; // 只要检测到至少一个行内公式即可
+	}
+
+	return result;
+}
+
 /** 通用预处理：不改变语义，只优化 Markdown 格式 */
 function commonPreprocess(body: string): string {
 	let result = body;

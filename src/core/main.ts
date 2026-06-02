@@ -2,11 +2,12 @@ import { Plugin, ItemView, WorkspaceLeaf, MarkdownView, Notice, Modal, TextAreaC
 import { CacheManager } from '../utils/cache_manager';
 import { extractFrontmatter, extractFrontmatterValue, compileWithAI, previewHtml } from '../ai/ai_service';
 import { getAvailableAgents, detectAgent } from '../ai/local_agent';
-import { SKILLS, getSkillById, assemblePrompt, parseMarpDirectives, MARP_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT } from '../ai/skills';
+import { SKILLS, getSkillById, assemblePrompt, parseMarpDirectives, MARP_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT, setSkills } from '../ai/skills';
 import type { Mode, Skill } from '../ai/skills';
+import { loadSkillsFromDisk } from '../ai/skill_loader';
 import { LumiSlateSettingTab, DEFAULT_SETTINGS, DEFAULT_CSS_SYSTEM_PROMPT } from '../config/settings';
 import type { LumiSlateSettings } from '../config/settings';
-import { checkPreprocessedState } from '../utils/preprocess';
+import { checkPreprocessedState, detectSpecialSyntax } from '../utils/preprocess';
 import { downloadHtml, downloadPngFromIframe, saveHtmlToVault } from '../utils/export';
 import { ExportMenuModal, SkillGalleryModal } from '../ui/modals';
 
@@ -2140,6 +2141,21 @@ export default class LumiSlatePlugin extends Plugin {
 		// 初始化缓存管理器
 		this.cacheManager = new CacheManager(this.app, this.manifest.dir);
 
+		// 从磁盘加载 skills（插件目录下的 skills/ 文件夹）
+		const skillsDir = `${this.manifest.dir}/skills`;
+		const loadedSkills = await loadSkillsFromDisk(this.app.vault, skillsDir);
+		if (loadedSkills.length > 0) {
+			setSkills(loadedSkills);
+			console.log(`[LumiSlate] 已加载 ${loadedSkills.length} 个 skill`);
+			// 验证 defaultSkill 是否有效，无效则回退到第一个 skill
+			if (!getSkillById(this.settings.defaultSkill)) {
+				this.settings.defaultSkill = loadedSkills[0].id;
+				await this.saveSettings();
+			}
+		} else {
+			console.warn('[LumiSlate] 未从磁盘加载到任何 skill，skills 列表为空');
+		}
+
 		// 注册自定义视图
 		this.registerView(
 			LUMISLATE_VIEW_TYPE,
@@ -2510,6 +2526,25 @@ export default class LumiSlatePlugin extends Plugin {
 			// 组装 prompt
 			let prompt: string;
 
+			// 检测特殊语法 (Mermaid / KaTeX)，用于向 AI 注入精准渲染指令
+			const { body: rawBody } = extractFrontmatter(renderMarkdown);
+			const { hasMermaid, hasLatex, mermaidBlocks } = detectSpecialSyntax(rawBody || renderMarkdown);
+			let syntaxPrefix = '';
+			if (hasMermaid || hasLatex) {
+				const parts: string[] = [];
+				if (hasMermaid) {
+					parts.push('【Mermaid 图表渲染要求】\n本文档包含 Mermaid 图表代码块，你必须在生成的 HTML 中：\n1. 引入 Mermaid CDN (https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js)\n2. 将每个 mermaid 代码块的内容原样包裹在 <div class="mermaid">...</div> 中（不要对内容进行 HTML 转义）\n3. 在页面底部添加 <script>mermaid.initialize({startOnLoad:true});</script>\n检测到的图表内容预览：');
+					mermaidBlocks.forEach((block, i) => {
+						const preview = block.split('\n')[0].trim();
+						parts.push(`  [图表${i + 1}] ${preview}${block.includes('\n') ? ' ...' : ''}`);
+					});
+				}
+				if (hasLatex) {
+					parts.push('【LaTeX 数学公式渲染要求】\n本文档包含 LaTeX 数学公式，你必须在生成的 HTML 中确保：\n1. 已在 <head> 中引入 KaTeX CSS 和 JS CDN\n2. 页面加载后正确渲染所有 $...$ 和 $$...$$ 公式（使用 KaTeX 的 renderMathInElement 或等效方法）');
+				}
+				syntaxPrefix = parts.join('\n\n');
+			}
+
 			if (mode === 'marp') {
 				// Marp 模式: 使用 MARP_BODY + frontmatter 指令
 				let extraPrefix = '';
@@ -2520,9 +2555,13 @@ export default class LumiSlatePlugin extends Plugin {
 						extraPrefix = `【用户指定的 Marp 指令】\n${directives}`;
 					}
 				}
+				if (syntaxPrefix) {
+					extraPrefix = extraPrefix ? `${extraPrefix}\n\n${syntaxPrefix}` : syntaxPrefix;
+				}
 				prompt = assemblePrompt(MARP_BODY, renderMarkdown, extraPrefix || undefined);
 			} else {
-				// Design 模式: 使用选中的 skill
+				// Design 模式: 使用选中的 skill，不额外注入 Mermaid/KaTeX 专项指令
+				// （Design 模式的 skill body 自行决定是否支持这些语法）
 				prompt = assemblePrompt(skill!.body, renderMarkdown);
 			}
 

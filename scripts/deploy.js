@@ -9,6 +9,22 @@ const filesToCopy = [
   ['manifest.json', 'manifest.json'],
 ];
 
+/** 递归复制目录 */
+function copyDirSync(src, dest) {
+  if (!fs.existsSync(dest)) {
+    fs.mkdirSync(dest, { recursive: true });
+  }
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
 // 确保目标目录存在
 if (!fs.existsSync(targetDir)) {
   console.error('❌ 目标目录不存在:', targetDir);
@@ -32,6 +48,18 @@ for (const [src, dest] of filesToCopy) {
   console.log(`  ✅ ${dest} (${size} KB)`);
 }
 
+// 复制 skills 目录
+const skillsSrc = path.resolve('dist/skills');
+const skillsDest = path.join(targetDir, 'skills');
+if (fs.existsSync(skillsSrc)) {
+  copyDirSync(skillsSrc, skillsDest);
+  const skillCount = fs.readdirSync(skillsDest, { withFileTypes: true }).filter(e => e.isDirectory()).length;
+  console.log(`  ✅ skills/ (${skillCount} 个 skill)`);
+  copied++;
+} else {
+  console.warn('  ⚠️ dist/skills/ 不存在，跳过复制');
+}
+
 // 确保 css 目录存在
 const cssDir = path.join(targetDir, 'css');
 if (!fs.existsSync(cssDir)) {
@@ -39,4 +67,4 @@ if (!fs.existsSync(cssDir)) {
   console.log('  📁 css/');
 }
 
-console.log(`\n🚀 已部署 ${copied} 个文件到 ${targetDir}`);
+console.log(`\n🚀 已部署 ${copied} 项到 ${targetDir}`);
