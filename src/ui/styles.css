@@ -28,6 +28,23 @@
 	background: var(--background-secondary);
 	border-bottom: 1px solid var(--background-modifier-border);
 	flex-shrink: 0;
+	flex-wrap: wrap;
+}
+
+/* 顶部工具栏中的操作按钮容器 */
+.lumislate-toolbar-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+/* 主页按钮激活高亮 */
+.lumislate-btn-ghost.active,
+.lumislate-btn-icon.active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
 }
 
 /* 上下文信息 */
@@ -57,7 +74,7 @@
 	font-weight: 500;
 }
 
-/* 底部操作栏 */
+/* 底部操作栏（已合并到顶部，样式保留兼容） */
 .lumislate-action-bar {
 	display: flex;
 	align-items: center;
@@ -67,6 +84,40 @@
 	background: var(--background-secondary);
 	border-top: 1px solid var(--background-modifier-border);
 	flex-shrink: 0;
+}
+
+/* 底部状态栏 */
+.lumislate-status-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 4px 12px;
+	background: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.lumislate-status-left,
+.lumislate-status-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.lumislate-status-item {
+	white-space: nowrap;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.lumislate-status-item.status-error {
+	color: var(--text-error);
+	font-weight: 500;
 }
 
 .lumislate-action-group {
@@ -731,4 +782,243 @@
 
 .lumislate-context-menu-item.danger:hover {
 	background: rgba(var(--background-modifier-error-rgb), 0.1);
+}
+
+/* ===== Skill Gallery ===== */
+.lumislate-skill-select-btn {
+	min-width: 120px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.lumislate-skill-gallery-modal {
+	padding: 4px 0;
+}
+
+.lumislate-skill-gallery-title {
+	margin: 0 0 6px;
+	font-size: 18px;
+	font-weight: 700;
+	color: var(--text-normal);
+}
+
+.lumislate-skill-gallery-subtitle {
+	margin: 0 0 20px;
+	font-size: 13px;
+	color: var(--text-muted);
+	line-height: 1.5;
+}
+
+.lumislate-skill-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 12px;
+}
+
+.lumislate-skill-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 16px;
+	border-radius: 10px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.lumislate-skill-card:hover {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 2px 8px rgba(var(--interactive-accent-rgb), 0.08);
+	transform: translateY(-1px);
+}
+
+.lumislate-skill-card.active {
+	border-color: var(--interactive-accent);
+	background: rgba(var(--interactive-accent-rgb), 0.06);
+	box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.lumislate-skill-card-icon {
+	width: 36px;
+	height: 36px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+	margin-bottom: 4px;
+}
+
+.lumislate-skill-card-icon svg {
+	width: 20px;
+	height: 20px;
+}
+
+.lumislate-skill-card-name {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.lumislate-skill-card-desc {
+	font-size: 12px;
+	color: var(--text-muted);
+	line-height: 1.45;
+	flex: 1;
+}
+
+.lumislate-skill-card-badge {
+	align-self: flex-start;
+	padding: 2px 8px;
+	border-radius: 4px;
+	font-size: 11px;
+	font-weight: 600;
+	background: var(--background-secondary);
+	color: var(--text-faint);
+}
+
+/* ===== Agent 图形化卡片 ===== */
+.lumislate-agent-summary {
+	margin-bottom: 12px;
+}
+
+.lumislate-agent-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+	gap: 10px;
+	margin-bottom: 16px;
+}
+
+.lumislate-agent-card {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 12px 14px;
+	border-radius: 10px;
+	border: 1.5px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	transition: all 0.15s ease;
+	position: relative;
+	overflow: hidden;
+}
+
+.lumislate-agent-card:hover.available {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 2px 10px rgba(var(--interactive-accent-rgb), 0.1);
+	transform: translateY(-1px);
+}
+
+.lumislate-agent-card.selected {
+	border-color: var(--interactive-accent);
+	background: rgba(var(--interactive-accent-rgb), 0.06);
+	box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.lumislate-agent-card.unavailable {
+	background: var(--background-secondary);
+}
+
+.lumislate-agent-card-icon {
+	width: 36px;
+	height: 36px;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+}
+
+.lumislate-agent-card-icon svg {
+	width: 20px;
+	height: 20px;
+}
+
+.lumislate-agent-card-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.lumislate-agent-card-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.lumislate-agent-card-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lumislate-agent-card-badge {
+	flex-shrink: 0;
+	padding: 1px 7px;
+	border-radius: 10px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.lumislate-agent-card-badge.ok {
+	background: rgba(31, 122, 58, 0.12);
+	color: var(--text-success);
+}
+
+.lumislate-agent-card-badge.missing {
+	background: rgba(156, 42, 37, 0.1);
+	color: var(--text-error);
+}
+
+.lumislate-agent-card-vendor {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.lumislate-agent-card-path {
+	font-size: 10px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace), monospace;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lumislate-agent-card-selected {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	color: var(--interactive-accent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.lumislate-agent-card-selected svg {
+	width: 16px;
+	height: 16px;
+}
+
+/* ===== 设置面板状态提示 ===== */
+.lumislate-status-ok {
+	color: var(--text-success);
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.lumislate-status-warning {
+	color: var(--text-error);
+	font-size: 13px;
 }

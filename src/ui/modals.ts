@@ -1,73 +1,5 @@
 import { App, Modal, ButtonComponent, setIcon } from 'obsidian';
-
-export type PreprocessChoice = 'preprocess' | 'direct' | 'cancel';
-
-/**
- * 预处理确认弹窗
- * 当用户点击 AI 渲染但笔记未预处理时弹出
- */
-export class PreprocessConfirmModal extends Modal {
-	private choice: PreprocessChoice = 'cancel';
-	private resolved = false;
-
-	constructor(
-		app: App,
-		private skillName: string,
-		private preprocessedFileName: string,
-		private onChoose: (choice: PreprocessChoice) => void
-	) {
-		super(app);
-	}
-
-	onOpen(): void {
-		const { contentEl } = this;
-		contentEl.empty();
-
-		contentEl.createEl('h3', { text: '文本预处理' });
-		contentEl.createEl('p', {
-			text: `当前笔记尚未针对「${this.skillName}」进行预处理。`,
-		});
-		contentEl.createEl('p', {
-			text: `预处理会优化 Markdown 结构（规范化标题层级、清理多余空行、标准化列表缩进），以提高 AI 渲染质量。预处理后将在同目录创建「${this.preprocessedFileName}」，不会修改原始文件。`,
-		});
-
-		const buttonContainer = contentEl.createEl('div', {
-			cls: 'lumislate-modal-buttons',
-		});
-
-		new ButtonComponent(buttonContainer)
-			.setButtonText('预处理并渲染')
-			.setCta()
-			.onClick(() => {
-				this.choice = 'preprocess';
-				this.resolved = true;
-				this.close();
-			});
-
-		new ButtonComponent(buttonContainer)
-			.setButtonText('直接渲染（不推荐）')
-			.onClick(() => {
-				this.choice = 'direct';
-				this.resolved = true;
-				this.close();
-			});
-
-		new ButtonComponent(buttonContainer)
-			.setButtonText('取消')
-			.onClick(() => {
-				this.choice = 'cancel';
-				this.resolved = true;
-				this.close();
-			});
-	}
-
-	onClose(): void {
-		if (!this.resolved) {
-			this.choice = 'cancel';
-		}
-		this.onChoose(this.choice);
-	}
-}
+import type { Skill } from '../ai/skills';
 
 export type ExportType = 'html-download' | 'png-download' | 'html-vault';
 
@@ -120,5 +52,86 @@ export class ExportMenuModal extends Modal {
 		titleEl.appendText(' ' + title);
 		item.createEl('div', { cls: 'lumislate-export-item-desc', text: desc });
 		item.addEventListener('click', onClick);
+	}
+}
+
+/** 分类标签中文映射 */
+function getCategoryLabel(category: string): string {
+	const map: Record<string, string> = {
+		article: '文章',
+		prototype: '原型',
+	};
+	return map[category] || category;
+}
+
+/**
+ * Skill Gallery 模态框
+ * 以卡片网格形式展示所有可用 Design Skills，供用户直观选择
+ */
+export class SkillGalleryModal extends Modal {
+	constructor(
+		app: App,
+		private skills: Skill[],
+		private currentSkillId: string,
+		private onSelect: (skillId: string) => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('lumislate-skill-gallery-modal');
+
+		// 扩大模态框宽度以容纳网格
+		this.modalEl.style.maxWidth = '720px';
+
+		contentEl.createEl('h3', {
+			text: '选择设计样式',
+			cls: 'lumislate-skill-gallery-title',
+		});
+		contentEl.createEl('p', {
+			text: '选择一种设计模板，AI 将根据你的 Markdown 内容生成对应风格的 HTML 页面。',
+			cls: 'lumislate-skill-gallery-subtitle',
+		});
+
+		const grid = contentEl.createEl('div', { cls: 'lumislate-skill-grid' });
+
+		for (const skill of this.skills) {
+			const isActive = skill.id === this.currentSkillId;
+			const card = grid.createEl('div', {
+				cls: `lumislate-skill-card${isActive ? ' active' : ''}`,
+			});
+
+			const iconWrap = card.createEl('div', { cls: 'lumislate-skill-card-icon' });
+			setIcon(iconWrap, skill.icon);
+
+			card.createEl('div', {
+				cls: 'lumislate-skill-card-name',
+				text: skill.name,
+			});
+
+			if (skill.description) {
+				card.createEl('div', {
+					cls: 'lumislate-skill-card-desc',
+					text: skill.description,
+				});
+			}
+
+			card.createEl('div', {
+				cls: 'lumislate-skill-card-badge',
+				text: getCategoryLabel(skill.category),
+			});
+
+			card.addEventListener('click', () => {
+				this.onSelect(skill.id);
+				this.close();
+			});
+		}
+	}
+
+	onClose(): void {
+		const { contentEl } = this;
+		contentEl.empty();
 	}
 }
