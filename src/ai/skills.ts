@@ -7,7 +7,7 @@
 import type { LoadedSkill } from './skill_loader';
 
 /** 工作模式 */
-export type Mode = 'marp' | 'design';
+export type Mode = 'custom' | 'design';
 
 /** 各模式在 UI 中的显示信息 */
 export interface ModeInfo {
@@ -17,7 +17,7 @@ export interface ModeInfo {
 }
 
 export const MODES: ModeInfo[] = [
-	{ id: 'marp', name: '自定义模式', icon: 'palette' },
+	{ id: 'custom', name: '自定义模式', icon: 'palette' },
 	{ id: 'design', name: 'AI模式', icon: 'sparkles' },
 ];
 
@@ -74,12 +74,12 @@ export const SHARED_DESIGN_DIRECTIVES = `
 6. \`\`\`mermaid\` 图表代码块 → 必须在 \`<head>\` 中引入 Mermaid CDN（https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js）。将 mermaid 代码块的内容原样包裹在 \`<div class="mermaid">\` 中（不要对内容进行 HTML 转义），并在页面底部添加 \`<script>mermaid.initialize({startOnLoad:true});</script>\`。支持流程图(flowchart)、时序图(sequenceDiagram)、类图(classDiagram)、甘特图(gantt)、状态图(stateDiagram)等。如果同时存在多个 mermaid 图表，每个都使用独立的 \`<div class="mermaid">\` 包裹。
 `;
 
-/** Marp 模式专用的 prompt body */
-export const MARP_BODY = `【模板: Marp 幻灯片 / Presentation Deck】
+/** 自定义模式专用的 prompt body */
+export const CUSTOM_BODY = `【模板: 自定义模式 幻灯片 / Presentation Deck】
 【意图】将 Markdown 内容转换为横向幻灯片, 每页一个 <section>, 支持键盘/触摸翻页。
 【核心规则 — 必须严格遵守】
 1. 分页: Markdown 中的 \`---\` (单独一行的水平分割线) 是**幻灯片分页符**。按 \`---\` 将内容切分为若干页, 每一页生成一个 <section class="slide">。
-2. YAML 指令解析: 用户的 frontmatter 中可能包含 Marp 指令, 你必须识别并应用:
+2. YAML 指令解析: 用户的 frontmatter 中可能包含自定义模式指令, 你必须识别并应用:
    - theme: 主题名称 (你根据名称选择合适的配色方案)
    - paginate: true/false — 是否在右下角显示页码
    - size: 16:9 (默认) 或 4:3 — 决定幻灯片宽高比
@@ -101,15 +101,15 @@ export const MARP_BODY = `【模板: Marp 幻灯片 / Presentation Deck】
    - 引用块使用左侧色条
 7. 交互: 在 <script> 中实现键盘翻页 (左右箭头、空格、PgUp/PgDown) 和点击翻页。显示当前页码 / 总页数。首屏显示 "按 → 或空格翻页" 提示, 2 秒后淡出。
 8. 输出结构:
-   <div id="marp-deck">
+   <div id="custom-deck">
      <section class="slide" ...>第1页内容</section>
      <section class="slide" ...>第2页内容</section>
      ...
    </div>
    加上翻页控制 UI 和键盘事件脚本。`;
 
-/** 解析 Marp YAML 指令，返回可用于 prompt 的指令摘要 */
-export function parseMarpDirectives(frontmatter: string): string {
+/** 解析 Custom YAML 指令，返回可用于 prompt 的指令摘要 */
+export function parseCustomDirectives(frontmatter: string): string {
 	const lines = frontmatter.split('\n');
 	const directives: string[] = [];
 	for (const line of lines) {
@@ -144,7 +144,7 @@ export function parseMarpDirectives(frontmatter: string): string {
 	return directives.length > 0 ? directives.join('\n') : '(无额外指令)';
 }
 
-/** 自定义模式 — 长文模式预处理 Prompt */
+/** 自定义模式 - 长文模式预处理 Prompt */
 export const LONGFORM_PREPROCESS_PROMPT = `你是一位专业的 Markdown 编辑。请将用户提供的 Markdown 内容处理成适合连续阅读的长文格式。
 
 【处理要求】
@@ -155,7 +155,7 @@ export const LONGFORM_PREPROCESS_PROMPT = `你是一位专业的 Markdown 编辑
 5. 保持所有原始内容完整，不要删减、不要总结
 6. 输出纯 Markdown 文本，不要包裹在代码块中，不要添加任何解释性文字`;
 
-/** 自定义模式 — 幻灯片模式预处理 Prompt */
+/** 自定义模式 - 幻灯片模式预处理 Prompt */
 export const SLIDE_PREPROCESS_PROMPT = `你是一位专业的幻灯片内容策划师。请将用户提供的 Markdown 内容处理成适合幻灯片展示的格式，在合适的逻辑断点处插入 \`---\` 分页符。
 
 【处理要求】

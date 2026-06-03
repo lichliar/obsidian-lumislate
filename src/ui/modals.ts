@@ -135,3 +135,66 @@ export class SkillGalleryModal extends Modal {
 		contentEl.empty();
 	}
 }
+
+/**
+ * Skill 选择确认弹窗
+ * 用户点击 iframe 内的设计样式后，弹出确认弹窗展示样式简介
+ */
+export class SkillConfirmModal extends Modal {
+	constructor(
+		app: App,
+		private skill: Skill,
+		private onConfirm: () => void,
+		private onCancel: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		// 弹窗头部
+		const header = contentEl.createEl('div', { cls: 'lumislate-skill-confirm-header' });
+		const iconWrap = header.createEl('div', { cls: 'lumislate-skill-confirm-icon' });
+		setIcon(iconWrap, this.skill.icon);
+		header.createEl('div', {
+			cls: 'lumislate-skill-confirm-name',
+			text: this.skill.name,
+		});
+
+		// 描述
+		if (this.skill.description) {
+			contentEl.createEl('p', {
+				cls: 'lumislate-skill-confirm-desc',
+				text: this.skill.description,
+			});
+		}
+
+		// 按钮区
+		const btnWrap = contentEl.createEl('div', { cls: 'lumislate-modal-buttons' });
+
+		const cancelBtn = btnWrap.createEl('button', {
+			text: '取消',
+			cls: 'lumislate-btn lumislate-btn-ghost',
+		});
+		cancelBtn.addEventListener('click', () => {
+			this.onCancel();
+			this.close();
+		});
+
+		const confirmBtn = btnWrap.createEl('button', {
+			text: '确认渲染',
+			cls: 'lumislate-btn lumislate-btn-primary',
+		});
+		confirmBtn.addEventListener('click', () => {
+			this.onConfirm();
+			this.close();
+		});
+	}
+
+	onClose(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}

@@ -54,18 +54,49 @@ export function parseSkillFile(content: string): LoadedSkill {
 	};
 }
 
-/** 扫描目录加载所有 skill */
-export async function loadSkillsFromDisk(
+/** 尝试使用 Node.js fs 读取 skills（桌面端 Electron 环境可用） */
+function tryLoadSkillsWithNodeFs(skillsDir: string): LoadedSkill[] | null {
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const fs = require('fs') as typeof import('fs');
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const path = require('path') as typeof import('path');
+
+		const skills: LoadedSkill[] = [];
+		const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			const skillPath = path.join(skillsDir, entry.name, 'SKILL.md');
+			try {
+				const content = fs.readFileSync(skillPath, 'utf-8');
+				const skill = parseSkillFile(content);
+				if (skill.id && skill.body) {
+					skills.push(skill);
+				}
+			} catch (e) {
+				console.warn(`[LumiSlate] Failed to load skill from ${skillPath}:`, e);
+			}
+		}
+		return skills;
+	} catch {
+		return null;
+	}
+}
+
+/** 使用 vault.adapter 读取 skills */
+async function tryLoadSkillsWithVaultAdapter(
 	vault: Vault,
 	skillsDir: string
 ): Promise<LoadedSkill[]> {
 	const skills: LoadedSkill[] = [];
-
 	try {
 		const entries = await vault.adapter.list(skillsDir);
 
 		for (const folder of entries.folders) {
-			const skillPath = `${skillsDir}/${folder}/SKILL.md`;
+			// 防御：folder 可能是完整路径，只取最后一截
+			const folderName = folder.includes('/') ? folder.split('/').pop()! : folder;
+			const skillPath = `${skillsDir}/${folderName}/SKILL.md`;
 			try {
 				const content = await vault.adapter.read(skillPath);
 				const skill = parseSkillFile(content);
@@ -79,6 +110,19 @@ export async function loadSkillsFromDisk(
 	} catch (e) {
 		console.warn(`[LumiSlate] Failed to list skills directory ${skillsDir}:`, e);
 	}
-
 	return skills;
+}
+
+/** 扫描目录加载所有 skill */
+export async function loadSkillsFromDisk(
+	vault: Vault,
+	skillsDir: string
+): Promise<LoadedSkill[]> {
+	// 优先使用 Node fs（桌面端更可靠），失败时回退到 vault.adapter
+	const nodeSkills = tryLoadSkillsWithNodeFs(skillsDir);
+	if (nodeSkills && nodeSkills.length > 0) {
+		console.log(`[LumiSlate] 通过 Node fs 加载了 ${nodeSkills.length} 个 skill`);
+		return nodeSkills;
+	}
+	return tryLoadSkillsWithVaultAdapter(vault, skillsDir);
 }

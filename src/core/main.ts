@@ -1,15 +1,15 @@
 import { Plugin, ItemView, WorkspaceLeaf, MarkdownView, Notice, Modal, TextAreaComponent, ButtonComponent, TFile, setIcon, Menu } from 'obsidian';
 import { CacheManager } from '../utils/cache_manager';
-import { extractFrontmatter, extractFrontmatterValue, compileWithAI, previewHtml } from '../ai/ai_service';
+import { extractFrontmatter, extractFrontmatterValue, compileWithAI, previewHtml, extractHtml } from '../ai/ai_service';
 import { getAvailableAgents, detectAgent } from '../ai/local_agent';
-import { SKILLS, getSkillById, assemblePrompt, parseMarpDirectives, MARP_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT, setSkills } from '../ai/skills';
+import { SKILLS, getSkillById, assemblePrompt, parseCustomDirectives, CUSTOM_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT, setSkills } from '../ai/skills';
 import type { Mode, Skill } from '../ai/skills';
 import { loadSkillsFromDisk } from '../ai/skill_loader';
 import { LumiSlateSettingTab, DEFAULT_SETTINGS, DEFAULT_CSS_SYSTEM_PROMPT } from '../config/settings';
 import type { LumiSlateSettings } from '../config/settings';
 import { checkPreprocessedState, detectSpecialSyntax } from '../utils/preprocess';
 import { downloadHtml, downloadPngFromIframe, saveHtmlToVault } from '../utils/export';
-import { ExportMenuModal, SkillGalleryModal } from '../ui/modals';
+import { ExportMenuModal, SkillGalleryModal, SkillConfirmModal } from '../ui/modals';
 
 export const LUMISLATE_VIEW_TYPE = 'lumislate-canvas-view';
 
@@ -649,11 +649,11 @@ ${bodyHtml}
 }
 
 /**
- * Marp 降级渲染: 按 --- 分页生成简单幻灯片 HTML
+ * 自定义模式降级渲染: 按 --- 分页生成简单幻灯片 HTML
  * - 有分页符：固定比例 slide 模式，纵向滚动浏览
  * - 无分页符：长文模式，不设高度限制，宽度自适应
  */
-async function buildMarpFallbackPage(markdown: string, app: App, pluginDir: string): Promise<string> {
+async function buildCustomFallbackPage(markdown: string, app: App, pluginDir: string): Promise<string> {
 	const { frontmatter, body } = extractFrontmatter(markdown);
 	const bgColor = extractFrontmatterValue(frontmatter, 'backgroundcolor') || extractFrontmatterValue(frontmatter, 'backgroundColor') || '#0f172a';
 	const textColor = extractFrontmatterValue(frontmatter, 'color') || '#e2e8f0';
@@ -756,7 +756,7 @@ async function buildMarpFallbackPage(markdown: string, app: App, pluginDir: stri
 }
 html, body { width: 100%; height: 100%; overflow-x: visible; overflow-y: auto; }
 body { background: var(--ls-body-bg); color: var(--ls-body-color); font-family: var(--ls-font-family); }
-#marp-deck { width: 100%; min-height: 100%; overflow-x: visible; overflow-y: auto; display: flex; flex-direction: column; gap: var(--ls-deck-gap); padding: var(--ls-deck-padding); align-items: center; }
+#custom-deck { width: 100%; min-height: 100%; overflow-x: visible; overflow-y: auto; display: flex; flex-direction: column; gap: var(--ls-deck-gap); padding: var(--ls-deck-padding); align-items: center; }
 .slide-wrapper { display: flex; overflow: hidden; flex-shrink: 0; }
 /* 必须写死的布局引擎（用户不应覆盖） */
 .slide { position: relative; width: ${fixedWidth}px !important; height: ${fixedHeight}px !important; flex-shrink: 0; transform-origin: 0 0; overflow: hidden; }
@@ -813,13 +813,13 @@ ${customCss}
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 </head>
 <body>
-<div id="marp-deck">
+<div id="custom-deck">
 ${slidesHtml}
 </div>
 <script>
 (function() {
   function fitSlides() {
-    var deck = document.getElementById('marp-deck');
+    var deck = document.getElementById('custom-deck');
     if (!deck) return;
     var deckWidth = deck.clientWidth - 32;
     var slides = document.querySelectorAll('.slide');
@@ -870,6 +870,106 @@ ${slidesHtml}
 </html>`;
 }
 
+/** 生成 AI 渲染加载/思考中的过渡页面 */
+function getLoadingHTML(provider: string, modeLabel: string): string {
+	return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body {
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e2e8f0;
+}
+.loading-wrap {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  animation: fadeIn 0.4s ease-out;
+}
+.spinner-ring {
+  position: relative;
+  width: 56px;
+  height: 56px;
+}
+.spinner-ring svg {
+  width: 100%; height: 100%;
+  animation: spin 1.2s linear infinite;
+}
+.spinner-ring circle {
+  fill: none;
+  stroke: url(#spinnerGrad);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 120;
+  stroke-dashoffset: 30;
+}
+.loading-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  letter-spacing: 0.02em;
+}
+.loading-meta {
+  font-size: 0.8rem;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.loading-meta .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.loading-hint {
+  font-size: 0.75rem;
+  color: #475569;
+  max-width: 260px;
+  line-height: 1.5;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+<div class="loading-wrap">
+  <div class="spinner-ring">
+    <svg viewBox="0 0 56 56">
+      <defs>
+        <linearGradient id="spinnerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#6366f1" />
+          <stop offset="100%" stop-color="#a78bfa" />
+        </linearGradient>
+      </defs>
+      <circle cx="28" cy="28" r="24" />
+    </svg>
+  </div>
+  <div class="loading-title">AI 正在思考中…</div>
+  <div class="loading-meta"><span class="dot"></span><span>${escapeHtml(modeLabel)} · ${escapeHtml(provider)}</span></div>
+  <div class="loading-hint">设计生成可能需要几秒到几十秒，取决于内容长度和模型响应速度</div>
+</div>
+</body>
+</html>`;
+}
+
 /** 生成 iframe 暗黑欢迎页面的 srcdoc HTML */
 function getWelcomeHTML(): string {
 	return `<!DOCTYPE html>
@@ -903,13 +1003,9 @@ body {
 .logo-area h1 {
   font-size: 3rem; font-weight: 800; letter-spacing: -0.02em;
   color: #e2e8f0;
-  background: linear-gradient(90deg, #60a5fa, #a78bfa, #f472b6);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
 }
-.logo-area .tagline {
-  font-size: 0.9rem; color: #64748b; letter-spacing: 0.08em;
+.logo-area .subtitle {
+  font-size: 0.85rem; color: #64748b; letter-spacing: 0.02em;
 }
 .mode-buttons {
   display: flex;
@@ -930,6 +1026,7 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   min-width: 160px;
+  position: relative;
 }
 .mode-btn:hover {
   border-color: rgba(96,165,250,0.4);
@@ -942,7 +1039,29 @@ body {
 .mode-btn .label {
   font-size: 1rem; font-weight: 600; color: #e2e8f0;
 }
-.subtitle { font-size: 0.75rem; color: #475569; margin-top: 1rem; }
+/* Tooltip */
+.mode-btn .tooltip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+.mode-btn:hover .tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -953,19 +1072,20 @@ body {
 <div class="welcome">
   <div class="logo-area">
     <h1>LumiSlate</h1>
-    <div class="tagline">流光石板</div>
+    <div class="subtitle">选择 Markdown 笔记，开始编译高定画布</div>
   </div>
   <div class="mode-buttons">
-    <div class="mode-btn" data-mode="marp" onclick="selectMode('marp')">
+    <div class="mode-btn" data-mode="custom" onclick="selectMode('custom')">
+      <div class="tooltip">将 Markdown 转换为幻灯片 / 长文画布<br>支持自定义 CSS 与实时预览</div>
       <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></div>
       <div class="label">自定义模式</div>
     </div>
     <div class="mode-btn" data-mode="design" onclick="selectMode('design')">
+      <div class="tooltip">选择设计风格，由 AI 自动生成精美 HTML 页面<br>支持多种排版模板与实时编辑<br><span style="color:#f59e0b">首次使用需要进入设置配置AI功能</span></div>
       <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3z"/></svg></div>
       <div class="label">AI模式</div>
     </div>
   </div>
-  <div class="subtitle">选择 Markdown 笔记，开始编译高定画布</div>
 </div>
 <script>
 function selectMode(mode) {
@@ -983,19 +1103,78 @@ function getSkillIconSvg(iconName: string): string {
 	return el.innerHTML || '';
 }
 
-/** AI模式启动界面 — 内嵌 Skill 卡片网格 */
+/** AI模式启动界面 — 分类折叠 + 搜索 */
 function getDesignLauncherHTML(skills: Skill[], currentSkillId: string): string {
-	const categoryMap: Record<string, string> = { article: '文章', prototype: '原型' };
+	const categoryMap: Record<string, string> = {
+		article: '文章',
+		prototype: '原型',
+		doc: '文档',
+		email: '邮件',
+		data: '数据',
+		finance: '财务',
+		dashboard: '看板',
+		video: '视频',
+		poster: '海报',
+		card: '卡片',
+		mobile: '移动端',
+		general: '通用',
+	};
 
-	const cardsHtml = skills.map((skill) => {
-		const isActive = skill.id === currentSkillId;
-		const iconSvg = getSkillIconSvg(skill.icon);
+	// 按 category 分组
+	const grouped = new Map<string, Skill[]>();
+	for (const skill of skills) {
+		const cat = skill.category || 'general';
+		if (!grouped.has(cat)) grouped.set(cat, []);
+		grouped.get(cat)!.push(skill);
+	}
+
+	const categories = Array.from(grouped.keys()).sort();
+
+	// 生成分类标签
+	const tabsHtml = categories.map((cat) => {
+		const label = categoryMap[cat] || cat;
+		const count = grouped.get(cat)!.length;
+		return `<button class="skill-category-tab" data-category="${cat}">${label}<span class="skill-tab-count">${count}</span></button>`;
+	}).join('');
+
+	// 为每个分类生成 section
+	const sectionsHtml = categories.map((cat) => {
+		const catSkills = grouped.get(cat)!;
+		const label = categoryMap[cat] || cat;
+		const cards = catSkills.map((skill, idx) => {
+			const isActive = skill.id === currentSkillId;
+			const iconSvg = getSkillIconSvg(skill.icon);
+			const hiddenClass = idx >= 3 ? 'skill-card-hidden' : '';
+			return `
+				<div class="skill-card ${isActive ? 'active' : ''} ${hiddenClass}" data-skill-id="${skill.id}" data-category="${cat}">
+					<div class="skill-card-icon">${iconSvg}</div>
+					<div class="skill-card-name">${skill.name}</div>
+					<div class="skill-card-desc">${skill.description}</div>
+					<div class="skill-card-badge">${label}</div>
+				</div>
+			`;
+		}).join('');
+
+		const hasMore = catSkills.length > 3;
+		const expandBtn = hasMore
+			? `<button class="skill-expand-btn" data-category="${cat}">展开更多 (${catSkills.length - 3})</button>`
+			: '';
+
 		return `
-			<div class="skill-card ${isActive ? 'active' : ''}" data-skill-id="${skill.id}">
-				<div class="skill-card-icon">${iconSvg}</div>
-				<div class="skill-card-name">${skill.name}</div>
-				<div class="skill-card-desc">${skill.description}</div>
-				<div class="skill-card-badge">${categoryMap[skill.category] || skill.category}</div>
+			<div class="skill-category-section" data-category="${cat}">
+				<div class="skill-category-header">
+					<div class="skill-category-header-left">
+						<span class="skill-category-title">${label}</span>
+						<span class="skill-category-count">${catSkills.length}</span>
+					</div>
+					<button class="skill-category-toggle" data-category="${cat}" aria-label="折叠/展开">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+					</button>
+				</div>
+				<div class="skill-grid skill-grid-collapsible">
+					${cards}
+				</div>
+				${expandBtn}
 			</div>
 		`;
 	}).join('');
@@ -1015,8 +1194,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 24px;
+  padding: 20px 24px;
   min-height: 100vh;
 }
 .launcher {
@@ -1026,10 +1204,10 @@ body {
 }
 .launcher-header {
   text-align: center;
-  margin-bottom: 28px;
+  margin-bottom: 20px;
 }
 .launcher-header h1 {
-  font-size: 1.75rem;
+  font-size: 1.6rem;
   font-weight: 700;
   color: #e2e8f0;
   margin-bottom: 6px;
@@ -1037,6 +1215,152 @@ body {
 .launcher-header p {
   font-size: 0.9rem;
   color: #94a3b8;
+}
+.skill-search-wrap {
+  margin-bottom: 14px;
+}
+.skill-search-input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.6);
+  color: #e2e8f0;
+  font-size: 14px;
+  outline: none;
+  transition: all 0.15s ease;
+}
+.skill-search-input::placeholder {
+  color: #64748b;
+}
+.skill-search-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+.skill-category-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.3) transparent;
+}
+.skill-category-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+.skill-category-tabs::-webkit-scrollbar-thumb {
+  background: rgba(148,163,184,0.3);
+  border-radius: 2px;
+}
+.skill-category-tab {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.5);
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.skill-category-tab:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #c7d2fe;
+}
+.skill-category-tab.active {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.15);
+  color: #c7d2fe;
+}
+.skill-tab-count {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.15);
+  color: #64748b;
+}
+.skill-category-tab.active .skill-tab-count {
+  background: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+}
+.skill-content {
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.3) transparent;
+}
+.skill-content::-webkit-scrollbar {
+  width: 4px;
+}
+.skill-content::-webkit-scrollbar-thumb {
+  background: rgba(148,163,184,0.3);
+  border-radius: 2px;
+}
+.skill-category-section {
+  margin-bottom: 16px;
+}
+.skill-category-section.collapsed .skill-grid-collapsible,
+.skill-category-section.collapsed .skill-expand-btn {
+  display: none;
+}
+.skill-category-section.collapsed .skill-category-toggle svg {
+  transform: rotate(180deg);
+}
+.skill-category-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+.skill-category-header:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.skill-category-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skill-category-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.skill-category-count {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #64748b;
+}
+.skill-category-toggle {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+.skill-category-toggle:hover {
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+}
+.skill-category-toggle svg {
+  transition: transform 0.2s ease;
 }
 .skill-grid {
   display: grid;
@@ -1064,6 +1388,9 @@ body {
   border-color: #6366f1;
   background: rgba(99, 102, 241, 0.1);
   box-shadow: 0 0 0 1px #6366f1, 0 2px 12px rgba(99, 102, 241, 0.15);
+}
+.skill-card.skill-card-hidden {
+  display: none;
 }
 .skill-card-icon {
   width: 36px;
@@ -1101,6 +1428,42 @@ body {
   background: rgba(30, 41, 59, 0.8);
   color: #64748b;
 }
+.skill-expand-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px dashed rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.3);
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.skill-expand-btn:hover {
+  border-color: #6366f1;
+  color: #c7d2fe;
+  background: rgba(99, 102, 241, 0.08);
+}
+.skill-empty-state {
+  text-align: center;
+  padding: 48px 24px;
+}
+.skill-empty-icon {
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+.skill-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-bottom: 6px;
+}
+.skill-empty-desc {
+  font-size: 13px;
+  color: #64748b;
+}
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -1113,19 +1476,262 @@ body {
     <h1>选择设计样式</h1>
     <p>点击卡片选择模板，AI 将立即开始渲染</p>
   </div>
-  <div class="skill-grid">
-    ${cardsHtml}
+  <div class="skill-search-wrap">
+    <input type="text" class="skill-search-input" placeholder="搜索样式名称或描述..." />
+  </div>
+  <div class="skill-category-tabs">
+    <button class="skill-category-tab active" data-category="all">全部<span class="skill-tab-count">${skills.length}</span></button>
+    ${tabsHtml}
+  </div>
+  <div class="skill-content">
+    ${sectionsHtml}
+    <div class="skill-empty-state" style="display:none;">
+      <div class="skill-empty-icon">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#475569;"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path><line x1="11" y1="8" x2="11" y2="11"></line><line x1="11" y1="11" x2="14" y2="11"></line></svg>
+      </div>
+      <div class="skill-empty-title">未找到匹配的样式</div>
+      <div class="skill-empty-desc">尝试使用其他关键词搜索</div>
+    </div>
   </div>
 </div>
 <script>
+(function() {
+  var searchInput = document.querySelector('.skill-search-input');
+  var tabs = document.querySelectorAll('.skill-category-tab');
+  var sections = document.querySelectorAll('.skill-category-section');
+  var emptyState = document.querySelector('.skill-empty-state');
+
+  function resetToDefault() {
+    emptyState.style.display = 'none';
+    sections.forEach(function(sec) {
+      sec.style.display = '';
+      sec.classList.remove('collapsed');
+      var cards = sec.querySelectorAll('.skill-card');
+      cards.forEach(function(card, idx) {
+        card.style.display = '';
+        if (idx >= 3) {
+          card.classList.add('skill-card-hidden');
+        } else {
+          card.classList.remove('skill-card-hidden');
+        }
+      });
+      var expandBtn = sec.querySelector('.skill-expand-btn');
+      if (expandBtn) {
+        var total = cards.length;
+        expandBtn.style.display = total > 3 ? '' : 'none';
+        expandBtn.textContent = '展开更多 (' + (total - 3) + ')';
+      }
+    });
+  }
+
+  function updateEmptyState() {
+    var anyVisible = false;
+    sections.forEach(function(sec) {
+      if (sec.style.display !== 'none') anyVisible = true;
+    });
+    emptyState.style.display = anyVisible ? 'none' : '';
+  }
+
+  // 搜索过滤
+  searchInput.addEventListener('input', function() {
+    var query = this.value.trim().toLowerCase();
+    if (!query) {
+      resetToDefault();
+      return;
+    }
+
+    sections.forEach(function(sec) {
+      var cards = sec.querySelectorAll('.skill-card');
+      var sectionVisible = false;
+      cards.forEach(function(card) {
+        var name = card.querySelector('.skill-card-name').textContent.toLowerCase();
+        var desc = card.querySelector('.skill-card-desc').textContent.toLowerCase();
+        var match = name.indexOf(query) !== -1 || desc.indexOf(query) !== -1;
+        card.style.display = match ? '' : 'none';
+        if (match) {
+          card.classList.remove('skill-card-hidden');
+          sectionVisible = true;
+        }
+      });
+      sec.style.display = sectionVisible ? '' : 'none';
+      var expandBtn = sec.querySelector('.skill-expand-btn');
+      if (expandBtn) expandBtn.style.display = 'none';
+      sec.classList.remove('collapsed');
+    });
+    updateEmptyState();
+  });
+
+  // 分类标签切换
+  tabs.forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      var cat = this.dataset.category;
+      tabs.forEach(function(t) { t.classList.remove('active'); });
+      this.classList.add('active');
+
+      searchInput.value = '';
+      resetToDefault();
+
+      if (cat !== 'all') {
+        sections.forEach(function(sec) {
+          sec.style.display = sec.dataset.category === cat ? '' : 'none';
+        });
+      }
+    });
+  });
+
+  // 分类折叠/展开
+  document.querySelectorAll('.skill-category-header').forEach(function(header) {
+    header.addEventListener('click', function() {
+      var section = this.closest('.skill-category-section');
+      section.classList.toggle('collapsed');
+    });
+  });
+
+  document.querySelectorAll('.skill-category-toggle').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var section = this.closest('.skill-category-section');
+      section.classList.toggle('collapsed');
+    });
+  });
+
+  // 展开更多
+  document.querySelectorAll('.skill-expand-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var cat = this.dataset.category;
+      var section = document.querySelector('.skill-category-section[data-category="' + cat + '"]');
+      if (!section) return;
+      var hiddenCards = section.querySelectorAll('.skill-card-hidden');
+      hiddenCards.forEach(function(card) {
+        card.classList.remove('skill-card-hidden');
+      });
+      this.style.display = 'none';
+    });
+  });
+
+  // 卡片点击
   document.querySelectorAll('.skill-card').forEach(function(card) {
     card.addEventListener('click', function() {
-      var skillId = card.dataset.skillId;
+      var skillId = this.dataset.skillId;
       if (skillId && window.parent !== window) {
         window.parent.postMessage({ type: 'lumislate-skill-select', skillId: skillId }, '*');
       }
     });
   });
+})();
+</script>
+</body>
+</html>`;
+}
+
+/** 生成 AI 接入引导页 HTML */
+function getAiGuideHTML(): string {
+	return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body {
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e2e8f0;
+}
+.guide {
+  text-align: center;
+  animation: fadeIn 0.6s ease-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  max-width: 480px;
+  padding: 2rem;
+}
+.guide h1 {
+  font-size: 1.5rem; font-weight: 700; color: #e2e8f0;
+}
+.guide p {
+  font-size: 0.85rem; color: #94a3b8; line-height: 1.6;
+}
+.guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+}
+.step-num {
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+  font-size: 12px; font-weight: 700;
+  flex-shrink: 0;
+}
+.step-body {
+  font-size: 13px; color: #cbd5e1; line-height: 1.5;
+}
+.step-body strong {
+  color: #e2e8f0; font-weight: 600;
+}
+.guide-btn {
+  margin-top: 0.5rem;
+  padding: 10px 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  background: rgba(99, 102, 241, 0.12);
+  color: #c7d2fe;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.guide-btn:hover {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.6);
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+<div class="guide">
+  <h1>🤖 请先接入 AI</h1>
+  <p>AI 模式需要配置本地 CLI Agent 或在线 API 才能生成精美排版。请按以下步骤完成配置：</p>
+  <div class="guide-steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body"><strong>本地接入</strong>：安装 claude / codex / gemini 等 CLI 工具并确保在 PATH 中可用</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body"><strong>在线 API</strong>：在设置中填入 API Key 和 Base URL（支持 Kimi、DeepSeek、OpenRouter 等）</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body"><strong>测试连接</strong>：配置完成后点击「AI 接入」按钮检查状态</div>
+    </div>
+  </div>
+  <button class="guide-btn" onclick="openSettings()">打开设置</button>
+</div>
+<script>
+function openSettings() {
+  window.parent.postMessage({ type: 'lumislate-open-settings' }, '*');
+}
 </script>
 </body>
 </html>`;
@@ -1612,9 +2218,10 @@ function getImageInteractionScript(): string {
 
 	// 观察图片加载完成，更新手柄位置
 	var imgObserver = new MutationObserver(function(mutations) {
-		if (activeImage && !activeImage.complete) {
-			activeImage.addEventListener('load', function onLoad() {
-				activeImage.removeEventListener('load', onLoad);
+		var img = activeImage;
+		if (img && !img.complete) {
+			img.addEventListener('load', function onLoad() {
+				img.removeEventListener('load', onLoad);
 				updateHandlesPosition();
 			});
 		}
@@ -1649,6 +2256,8 @@ export interface RunStats {
 	model?: string;
 	inputTokens?: number;
 	outputTokens?: number;
+	/** AI 模式当前使用的 skill 名称 */
+	skillName?: string;
 }
 
 export class LumiSlateView extends ItemView {
@@ -1658,17 +2267,13 @@ export class LumiSlateView extends ItemView {
 
 	private currentMode: Mode = 'design';
 	private _isHomePage = true;
-
 	// 操作按钮引用（用于动态状态更新）
-	private aiRenderBtn: HTMLButtonElement | null = null;
 	private exportBtn: HTMLButtonElement | null = null;
-	private cancelBtn: HTMLButtonElement | null = null;
 	private settingsBtn: HTMLButtonElement | null = null;
-	private marpSizeSelect: HTMLSelectElement | null = null;
-	private marpCssBtn: HTMLButtonElement | null = null;
-	private marpCssNameEl: HTMLElement | null = null;
-	private marpPreprocessBtn: HTMLButtonElement | null = null;
-	private skillSelectBtn: HTMLButtonElement | null = null;
+	private customSizeSelect: HTMLSelectElement | null = null;
+	private customCssBtn: HTMLButtonElement | null = null;
+	private customCssNameEl: HTMLElement | null = null;
+	private customPreprocessBtn: HTMLButtonElement | null = null;
 	private clearCacheBtn: HTMLButtonElement | null = null;
 
 	// 工具栏固定元素
@@ -1685,6 +2290,7 @@ export class LumiSlateView extends ItemView {
 	private _hasCache = false;
 	private _isPreprocessed = false;
 	private _hasDividers = false;
+	private _hasAccumulated = false;
 	private _currentFileName: string | null = null;
 	private _selectedSkillId: string = SKILLS[0]?.id || '';
 
@@ -1694,10 +2300,10 @@ export class LumiSlateView extends ItemView {
 	onAiCancel: (() => void) | null = null;
 	onOpenSettings: (() => void) | null = null;
 	onExport: (() => void) | null = null;
-	onMarpSizeChange: ((size: string) => void) | null = null;
-	onMarpCss: (() => void) | null = null;
-	onMarpPreprocessLongform: (() => void) | null = null;
-	onMarpPreprocessSlide: (() => void) | null = null;
+	onCustomSizeChange: ((size: string) => void) | null = null;
+	onCustomCss: (() => void) | null = null;
+	onCustomPreprocessLongform: (() => void) | null = null;
+	onCustomPreprocessSlide: (() => void) | null = null;
 	onGoHome: (() => void) | null = null;
 	onClearCache: (() => void) | null = null;
 
@@ -1722,8 +2328,26 @@ export class LumiSlateView extends ItemView {
 		// ========== 顶部工具栏 ==========
 		this.toolbarEl = container.createEl('div', { cls: 'lumislate-toolbar' });
 
-		// 左侧：模式切换标签（固定）+ 主页 + 设置
+		// 左侧：主页 + 设置 + AI接入（固定）+ 模式切换标签
 		const leftGroup = this.toolbarEl.createEl('div', { cls: 'lumislate-context-group' });
+
+		// 主页按钮
+		this.homeBtn = leftGroup.createEl('button', {
+			cls: `lumislate-btn lumislate-btn-ghost lumislate-btn-icon ${this._isHomePage ? 'active' : ''}`,
+			attr: { 'aria-label': '返回主页' },
+		});
+		setIcon(this.homeBtn, 'home');
+		this.homeBtn.addEventListener('click', () => this.onGoHome?.());
+
+		// 设置按钮
+		this.settingsBtn = leftGroup.createEl('button', {
+			cls: 'lumislate-btn lumislate-btn-ghost lumislate-btn-icon',
+			attr: { 'aria-label': '设置' },
+		});
+		setIcon(this.settingsBtn, 'settings');
+		this.settingsBtn.addEventListener('click', () => this.onOpenSettings?.());
+
+		// 模式切换标签
 		const modeGroup = leftGroup.createEl('div', { cls: 'lumislate-mode-tabs' });
 		for (const mode of MODES) {
 			const tab = modeGroup.createEl('button', {
@@ -1744,22 +2368,6 @@ export class LumiSlateView extends ItemView {
 				}
 			});
 		}
-
-		// 主页按钮（固定，紧跟模式标签）
-		this.homeBtn = leftGroup.createEl('button', {
-			cls: `lumislate-btn lumislate-btn-ghost lumislate-btn-icon ${this._isHomePage ? 'active' : ''}`,
-			attr: { 'aria-label': '返回主页' },
-		});
-		setIcon(this.homeBtn, 'home');
-		this.homeBtn.addEventListener('click', () => this.onGoHome?.());
-
-		// 设置按钮（固定，紧跟主页）
-		this.settingsBtn = leftGroup.createEl('button', {
-			cls: 'lumislate-btn lumislate-btn-ghost lumislate-btn-icon',
-			attr: { 'aria-label': '设置' },
-		});
-		setIcon(this.settingsBtn, 'settings');
-		this.settingsBtn.addEventListener('click', () => this.onOpenSettings?.());
 
 		// 右侧：操作按钮容器（动态）
 		const rightGroup = this.toolbarEl.createEl('div', { cls: 'lumislate-context-group' });
@@ -1802,8 +2410,8 @@ export class LumiSlateView extends ItemView {
 		if (!this.toolbarActionsEl) return;
 		this.toolbarActionsEl.empty();
 
-		if (this.currentMode === 'marp') {
-			this.buildMarpActions(this.toolbarActionsEl);
+		if (this.currentMode === 'custom') {
+			this.buildCustomActions(this.toolbarActionsEl);
 		} else {
 			this.buildDesignActions(this.toolbarActionsEl);
 		}
@@ -1838,35 +2446,35 @@ export class LumiSlateView extends ItemView {
 
 	// ============ 操作按钮（已合并到顶部工具栏） ============
 
-	private buildMarpActions(container: HTMLElement): void {
+	private buildCustomActions(container: HTMLElement): void {
 		// 文本预处理：下拉菜单（长文模式 / 幻灯片模式）
-		this.marpPreprocessBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
-		setIcon(this.marpPreprocessBtn.createSpan(), 'file-text');
-		this.marpPreprocessBtn.appendText(' 文本预处理');
-		this.marpPreprocessBtn.addEventListener('click', (evt) => this.showPreprocessMenu(evt));
+		this.customPreprocessBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
+		setIcon(this.customPreprocessBtn.createSpan(), 'file-text');
+		this.customPreprocessBtn.appendText(' 文本预处理');
+		this.customPreprocessBtn.addEventListener('click', (evt) => this.showPreprocessMenu(evt));
 
 		// 尺寸选择下拉框
-		this.marpSizeSelect = container.createEl('select', { cls: 'lumislate-skill-select' });
+		this.customSizeSelect = container.createEl('select', { cls: 'lumislate-skill-select' });
 		const sizes = [
 			{ label: '16:9', value: '16:9' },
 			{ label: '4:3', value: '4:3' },
 			{ label: '1:1', value: '1:1' },
 		];
 		for (const s of sizes) {
-			this.marpSizeSelect.createEl('option', { text: s.label, value: s.value });
+			this.customSizeSelect.createEl('option', { text: s.label, value: s.value });
 		}
-		this.marpSizeSelect.addEventListener('change', () => {
-			this.onMarpSizeChange?.(this.marpSizeSelect!.value);
+		this.customSizeSelect.addEventListener('change', () => {
+			this.onCustomSizeChange?.(this.customSizeSelect!.value);
 		});
 
-		this.marpCssBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
-		setIcon(this.marpCssBtn.createSpan(), 'palette');
-		this.marpCssBtn.appendText(' CSS');
-		this.marpCssBtn.addEventListener('click', () => this.onMarpCss?.());
+		this.customCssBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
+		setIcon(this.customCssBtn.createSpan(), 'palette');
+		this.customCssBtn.appendText(' CSS');
+		this.customCssBtn.addEventListener('click', () => this.onCustomCss?.());
 
 		// CSS 预设名称显示
-		this.marpCssNameEl = container.createEl('span', { cls: 'lumislate-context-item' });
-		this.marpCssNameEl.style.display = 'none';
+		this.customCssNameEl = container.createEl('span', { cls: 'lumislate-context-item' });
+		this.customCssNameEl.style.display = 'none';
 
 		// 导出
 		this.exportBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
@@ -1876,46 +2484,16 @@ export class LumiSlateView extends ItemView {
 	}
 
 	private buildDesignActions(container: HTMLElement): void {
-		// SKILL 选择按钮 → 打开 Gallery 模态框
-		this.skillSelectBtn = container.createEl('button', {
-			cls: 'lumislate-btn lumislate-btn-ghost lumislate-skill-select-btn',
-		});
-		this.updateSkillSelectBtnText();
-		this.skillSelectBtn.addEventListener('click', () => {
-			new SkillGalleryModal(
-				this.app,
-				SKILLS,
-				this._selectedSkillId,
-				(id) => {
-					this._selectedSkillId = id;
-					this.updateSkillSelectBtnText();
-					this.onSkillChange?.(id);
-				}
-			).open();
-		});
-
-		// AI 渲染 / 取消（同一位置互斥显示）
-		this.aiRenderBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-primary' });
-		setIcon(this.aiRenderBtn.createSpan(), 'sparkles');
-		this.aiRenderBtn.appendText(' AI 渲染');
-		this.aiRenderBtn.addEventListener('click', () => this.onAiRender?.());
-
-		this.cancelBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-danger' });
-		setIcon(this.cancelBtn.createSpan(), 'square');
-		this.cancelBtn.appendText(' 取消');
-		this.cancelBtn.style.display = 'none';
-		this.cancelBtn.addEventListener('click', () => this.onAiCancel?.());
-
 		// 导出
 		this.exportBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
 		setIcon(this.exportBtn.createSpan(), 'download');
 		this.exportBtn.appendText(' 导出');
 		this.exportBtn.addEventListener('click', () => this.onExport?.());
 
-		// 清除缓存
+		// 清除排版
 		this.clearCacheBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
-		setIcon(this.clearCacheBtn.createSpan(), 'trash-2');
-		this.clearCacheBtn.appendText(' 清除缓存');
+		setIcon(this.clearCacheBtn.createSpan(), 'eraser');
+		this.clearCacheBtn.appendText(' 清除排版');
 		this.clearCacheBtn.addEventListener('click', () => this.onClearCache?.());
 	}
 
@@ -1952,7 +2530,6 @@ export class LumiSlateView extends ItemView {
 
 	setSelectedSkill(skillId: string): void {
 		this._selectedSkillId = skillId;
-		this.updateSkillSelectBtnText();
 	}
 
 	getSelectedSkill(): string {
@@ -1960,28 +2537,20 @@ export class LumiSlateView extends ItemView {
 	}
 
 	/** 更新 Skill 选择按钮的显示文本和图标 */
-	private updateSkillSelectBtnText(): void {
-		const skill = getSkillById(this._selectedSkillId);
-		if (!this.skillSelectBtn) return;
-		this.skillSelectBtn.empty();
-		setIcon(this.skillSelectBtn.createSpan(), skill?.icon || 'sparkles');
-		this.skillSelectBtn.appendText(' ' + (skill?.name || '选择样式'));
+	setCustomSize(size: string): void {
+		if (this.customSizeSelect) this.customSizeSelect.value = size;
 	}
 
-	setMarpSize(size: string): void {
-		if (this.marpSizeSelect) this.marpSizeSelect.value = size;
-	}
-
-	/** 设置 Marp CSS 预设名称显示 */
-	setMarpCssName(name: string | null): void {
-		if (!this.marpCssNameEl) return;
+	/** 设置自定义模式 CSS 预设名称显示 */
+	setCustomCssName(name: string | null): void {
+		if (!this.customCssNameEl) return;
 		if (name) {
-			this.marpCssNameEl.empty();
-			setIcon(this.marpCssNameEl.createSpan(), 'palette');
-			this.marpCssNameEl.appendText(' ' + name);
-			this.marpCssNameEl.style.display = 'inline-flex';
+			this.customCssNameEl.empty();
+			setIcon(this.customCssNameEl.createSpan(), 'palette');
+			this.customCssNameEl.appendText(' ' + name);
+			this.customCssNameEl.style.display = 'inline-flex';
 		} else {
-			this.marpCssNameEl.style.display = 'none';
+			this.customCssNameEl.style.display = 'none';
 		}
 	}
 
@@ -1991,6 +2560,12 @@ export class LumiSlateView extends ItemView {
 		this._hasCache = hasCache;
 		this._isPreprocessed = isPreprocessed;
 		if (hasDividers !== undefined) this._hasDividers = hasDividers;
+		this.updateActionBarState();
+	}
+
+	/** 设置 AI 是否有累积输出（用于控制清除排版按钮可用状态） */
+	setHasAccumulated(hasAccumulated: boolean): void {
+		this._hasAccumulated = hasAccumulated;
 		this.updateActionBarState();
 	}
 
@@ -2006,31 +2581,23 @@ export class LumiSlateView extends ItemView {
 	}
 
 	private updateActionBarState(): void {
-		if (!this.aiRenderBtn || !this.cancelBtn) return;
-
 		if (this._isRendering) {
-			// 渲染中：显示取消，隐藏 AI 渲染，禁用其他
-			this.aiRenderBtn.style.display = 'none';
-			this.cancelBtn.style.display = 'inline-flex';
-			if (this.marpPreprocessBtn) this.marpPreprocessBtn.disabled = true;
+			// 渲染中：禁用操作按钮
+			if (this.customPreprocessBtn) this.customPreprocessBtn.disabled = true;
 			if (this.exportBtn) this.exportBtn.disabled = true;
-			if (this.marpSizeSelect) this.marpSizeSelect.disabled = true;
-			if (this.marpCssBtn) this.marpCssBtn.disabled = true;
-			if (this.skillSelectBtn) this.skillSelectBtn.disabled = true;
+			if (this.customSizeSelect) this.customSizeSelect.disabled = true;
+			if (this.customCssBtn) this.customCssBtn.disabled = true;
 			if (this.settingsBtn) this.settingsBtn.disabled = true;
 			if (this.clearCacheBtn) this.clearCacheBtn.disabled = true;
 		} else {
-			// 空闲：显示 AI 渲染，隐藏取消，启用所有
-			this.aiRenderBtn.style.display = 'inline-flex';
-			this.cancelBtn.style.display = 'none';
-			if (this.marpPreprocessBtn) this.marpPreprocessBtn.disabled = false;
+			// 空闲：启用操作按钮
+			if (this.customPreprocessBtn) this.customPreprocessBtn.disabled = false;
 			if (this.exportBtn) this.exportBtn.disabled = !this._hasCache;
 			// 尺寸选择框：有分页符时才可用
-			if (this.marpSizeSelect) this.marpSizeSelect.disabled = !this._hasDividers;
-			if (this.marpCssBtn) this.marpCssBtn.disabled = false;
-			if (this.skillSelectBtn) this.skillSelectBtn.disabled = false;
+			if (this.customSizeSelect) this.customSizeSelect.disabled = !this._hasDividers;
+			if (this.customCssBtn) this.customCssBtn.disabled = false;
 			if (this.settingsBtn) this.settingsBtn.disabled = false;
-			if (this.clearCacheBtn) this.clearCacheBtn.disabled = !this._hasCache;
+			if (this.clearCacheBtn) this.clearCacheBtn.disabled = !(this._hasCache || this._hasAccumulated);
 		}
 	}
 
@@ -2040,12 +2607,12 @@ export class LumiSlateView extends ItemView {
 		menu.addItem((item) => {
 			item.setTitle('长文模式')
 				.setIcon('file-text')
-				.onClick(() => this.onMarpPreprocessLongform?.());
+				.onClick(() => this.onCustomPreprocessLongform?.());
 		});
 		menu.addItem((item) => {
 			item.setTitle('幻灯片模式')
 				.setIcon('presentation')
-				.onClick(() => this.onMarpPreprocessSlide?.());
+				.onClick(() => this.onCustomPreprocessSlide?.());
 		});
 		menu.showAtMouseEvent(evt);
 	}
@@ -2058,6 +2625,13 @@ export class LumiSlateView extends ItemView {
 
 	/** 渲染 HTML 画布到 iframe */
 	renderCanvas(htmlContent: string): void {
+		if (!this.iframe) return;
+		this.iframe.srcdoc = htmlContent;
+		this.setHomePage(false);
+	}
+
+	/** AI 流式渲染：直接设置 srcdoc */
+	renderStream(htmlContent: string): void {
 		if (!this.iframe) return;
 		this.iframe.srcdoc = htmlContent;
 		this.setHomePage(false);
@@ -2097,6 +2671,9 @@ export class LumiSlateView extends ItemView {
 			if (stats.outputTokens !== undefined) parts.push(`out ${stats.outputTokens}`);
 			html += `<div class="lumislate-metric"><span class="lumislate-metric-label">Token</span><span class="lumislate-metric-value">${parts.join(' / ')}</span></div>`;
 		}
+		if (stats.skillName) {
+			html += `<div class="lumislate-metric"><span class="lumislate-metric-label">样式</span><span class="lumislate-metric-value">${escapeHtml(stats.skillName)}</span></div>`;
+		}
 
 		this.metricsEl.innerHTML = html;
 		this.metricsEl.style.display = 'flex';
@@ -2130,7 +2707,7 @@ export default class LumiSlatePlugin extends Plugin {
 	private aiAccumulated = '';
 	private currentRunStats: RunStats | null = null;
 	private metricsTimer: number | null = null;
-	private marpRenderDebounceTimer: number | null = null;
+	private customRenderDebounceTimer: number | null = null;
 
 	async onload(): Promise<void> {
 		console.log('LumiSlate (流光石板) 插件已加载');
@@ -2165,7 +2742,7 @@ export default class LumiSlatePlugin extends Plugin {
 					this.settings.defaultMode = mode;
 					this.saveSettings();
 					// 模式切换后重新加载对应内容
-					if (mode === 'marp') {
+					if (mode === "custom") {
 						await this.renderCurrentNote();
 					} else {
 						// design 模式：优先检查缓存，有缓存则恢复，否则显示启动界面
@@ -2184,7 +2761,7 @@ export default class LumiSlatePlugin extends Plugin {
 							view.renderCanvas(getDesignLauncherHTML(SKILLS, this.settings.defaultSkill));
 						}
 					}
-					this.refreshViewContext();
+					await this.refreshViewContext();
 				};
 				view.onSkillChange = (id) => {
 					this.settings.defaultSkill = id;
@@ -2198,20 +2775,20 @@ export default class LumiSlatePlugin extends Plugin {
 					// @ts-expect-error 内部 API
 					this.app.setting.openTabById(this.manifest.id);
 				};
-				view.onMarpPreprocessLongform = () => this.preprocessMarpCurrentNote('longform');
-				view.onMarpPreprocessSlide = () => this.preprocessMarpCurrentNote('slide');
+				view.onCustomPreprocessLongform = () => this.preprocessCustomCurrentNote('longform');
+				view.onCustomPreprocessSlide = () => this.preprocessCustomCurrentNote('slide');
 				view.onExport = () => this.showExportMenu();
-				view.onMarpSizeChange = (size) => this.handleMarpSizeChange(size);
-				view.onMarpCss = () => this.showMarpCssModal();
+				view.onCustomSizeChange = (size) => this.handleCustomSizeChange(size);
+				view.onCustomCss = () => this.showCustomCssModal();
 				view.onGoHome = () => view.resetToWelcome();
-					view.onClearCache = () => this.clearDesignCache();
+				view.onClearCache = () => this.handleClearLayout();
 				// 恢复上次选中的模式和 skill
 				view.setMode(this.settings.defaultMode);
 				view.setSelectedSkill(this.settings.defaultSkill);
 				// 初始化状态栏
 				const agent = this.getAgentDisplayText();
 				view.setStatusBarInfo(null, agent.text, agent.isError);
-				this.refreshViewContext();
+				this.refreshViewContext().catch(() => {});
 				return view;
 			}
 		);
@@ -2256,23 +2833,23 @@ export default class LumiSlatePlugin extends Plugin {
 		// 监听活跃文件变化，更新视图上下文
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', () => {
-				this.refreshViewContext();
+				this.refreshViewContext().catch(() => {});
 			})
 		);
 
-		// Marp 模式实时同步：监听当前文件修改，自动重新渲染
+		// 自定义模式实时同步：监听当前文件修改，自动重新渲染
 		this.registerEvent(
 			this.app.vault.on('modify', (file) => {
 				const activeFile = this.app.workspace.getActiveFile();
 				if (!activeFile || activeFile.path !== file.path) return;
 				const view = this.getLumiSlateView();
-				if (!view || view.getMode() !== 'marp') return;
+				if (!view || view.getMode() !== 'custom') return;
 				// 防抖：200ms 内多次修改只渲染一次
-				if (this.marpRenderDebounceTimer) {
-					clearTimeout(this.marpRenderDebounceTimer);
+				if (this.customRenderDebounceTimer) {
+					clearTimeout(this.customRenderDebounceTimer);
 				}
-				this.marpRenderDebounceTimer = window.setTimeout(() => {
-					this.marpRenderDebounceTimer = null;
+				this.customRenderDebounceTimer = window.setTimeout(() => {
+					this.customRenderDebounceTimer = null;
 					this.renderCurrentNote();
 				}, 200);
 			})
@@ -2284,8 +2861,8 @@ export default class LumiSlatePlugin extends Plugin {
 	onunload(): void {
 		console.log('LumiSlate 插件已卸载');
 		this.cancelAiRender();
-		if (this.marpRenderDebounceTimer) {
-			clearTimeout(this.marpRenderDebounceTimer);
+		if (this.customRenderDebounceTimer) {
+			clearTimeout(this.customRenderDebounceTimer);
 		}
 		this.app.workspace.detachLeavesOfType(LUMISLATE_VIEW_TYPE);
 	}
@@ -2294,6 +2871,21 @@ export default class LumiSlatePlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// 迁移旧版 mode ID: 'marp' → 'custom'
+		if (this.settings.defaultMode === ('marp' as Mode)) {
+			this.settings.defaultMode = 'custom';
+		}
+		// 确保系统提示词字段有默认值（用户 data.json 可能残留空字符串）
+		if (!this.settings.cssSystemPrompt?.trim()) {
+			this.settings.cssSystemPrompt = DEFAULT_CSS_SYSTEM_PROMPT;
+		}
+		if (!this.settings.preprocessLongformPrompt?.trim()) {
+			this.settings.preprocessLongformPrompt = LONGFORM_PREPROCESS_PROMPT;
+		}
+		if (!this.settings.preprocessSlidePrompt?.trim()) {
+			this.settings.preprocessSlidePrompt = SLIDE_PREPROCESS_PROMPT;
+		}
+		await this.saveSettings();
 	}
 
 	async saveSettings(): Promise<void> {
@@ -2381,7 +2973,9 @@ export default class LumiSlatePlugin extends Plugin {
 	getLumiSlateView(): LumiSlateView | null {
 		const leaves = this.app.workspace.getLeavesOfType(LUMISLATE_VIEW_TYPE);
 		if (leaves.length === 0) return null;
-		return leaves[0].view as LumiSlateView;
+		const view = leaves[0].view;
+		if (!view || !(view instanceof LumiSlateView)) return null;
+		return view;
 	}
 
 	/** 刷新视图上下文信息（文件名、缓存状态、预处理状态） */
@@ -2403,19 +2997,20 @@ export default class LumiSlatePlugin extends Plugin {
 		const markdown = await this.app.vault.read(activeFile);
 		const { frontmatter, body } = extractFrontmatter(markdown);
 
-		// 检测是否有 Marp 分页符（用于控制尺寸选择框状态）
+		// 检测是否有自定义模式分页符（用于控制尺寸选择框状态）
 		const hasDividers = /^---\s*$/m.test(body);
 
 		// 读取当前 size 设置并同步到下拉框
 		const currentSize = extractFrontmatterValue(frontmatter, 'size') || '16:9';
-		view.setMarpSize(currentSize);
+		view.setCustomSize(currentSize);
 
-		// Marp 模式：检查预处理状态，始终实时渲染
-		if (mode === 'marp') {
-			const preprocessState = await checkPreprocessedState(this.app.vault, activeFile, 'marp');
+		// 自定义模式：检查预处理状态，始终实时渲染
+		if (mode === "custom") {
+			const preprocessState = await checkPreprocessedState(this.app.vault, activeFile, 'custom');
 			view.setContextInfo(activeFile.basename, false, preprocessState.preprocessed, hasDividers);
-			view.setMarpCssName(extractFrontmatterValue(frontmatter, 'lumislate_css'));
+			view.setCustomCssName(extractFrontmatterValue(frontmatter, 'lumislate_css'));
 			view.setExportEnabled(true);
+				view.setHasAccumulated(true);
 			view.setStatusBarInfo(activeFile.basename, agent.text, agent.isError);
 			return;
 		}
@@ -2458,9 +3053,9 @@ export default class LumiSlatePlugin extends Plugin {
 
 		const mode = view.getMode();
 
-		// Marp 模式：实时渲染，不缓存
-		if (mode === 'marp') {
-			const html = await buildMarpFallbackPage(resolvedMarkdown, this.app, this.manifest.dir);
+		// 自定义模式：实时渲染，不缓存
+		if (mode === "custom") {
+			const html = await buildCustomFallbackPage(resolvedMarkdown, this.app, this.manifest.dir);
 			const injected = injectInteractionScripts(html);
 			view.renderCanvas(injected);
 			await this.refreshViewContext();
@@ -2545,20 +3140,20 @@ export default class LumiSlatePlugin extends Plugin {
 				syntaxPrefix = parts.join('\n\n');
 			}
 
-			if (mode === 'marp') {
-				// Marp 模式: 使用 MARP_BODY + frontmatter 指令
+			if (mode === "custom") {
+				// 自定义模式: 使用 CUSTOM_BODY + frontmatter 指令
 				let extraPrefix = '';
 				const { frontmatter } = extractFrontmatter(renderMarkdown);
 				if (frontmatter) {
-					const directives = parseMarpDirectives(frontmatter);
+					const directives = parseCustomDirectives(frontmatter);
 					if (directives && directives !== '(无额外指令)') {
-						extraPrefix = `【用户指定的 Marp 指令】\n${directives}`;
+						extraPrefix = `【用户指定的自定义模式指令】\n${directives}`;
 					}
 				}
 				if (syntaxPrefix) {
 					extraPrefix = extraPrefix ? `${extraPrefix}\n\n${syntaxPrefix}` : syntaxPrefix;
 				}
-				prompt = assemblePrompt(MARP_BODY, renderMarkdown, extraPrefix || undefined);
+				prompt = assemblePrompt(CUSTOM_BODY, renderMarkdown, extraPrefix || undefined);
 			} else {
 				// Design 模式: 使用选中的 skill，不额外注入 Mermaid/KaTeX 专项指令
 				// （Design 模式的 skill body 自行决定是否支持这些语法）
@@ -2572,9 +3167,14 @@ export default class LumiSlatePlugin extends Plugin {
 			this.aiAbortCtl = ctl;
 			this.aiCancelled = false;
 			this.aiAccumulated = '';
+		view.setHasAccumulated(false);
+
+			const modeLabel = mode === "custom" ? '自定义模式幻灯片' : skill?.name ?? 'Design';
+			// 先展示过渡加载页，避免用户在模型思考期间看到空白
+			const loadingHtml = getLoadingHTML(resolved.reason, modeLabel);
+			view.renderStream(loadingHtml);
 
 			view.setStatus(`${resolved.reason} 渲染中…`);
-			const modeLabel = mode === 'marp' ? 'Marp 幻灯片' : skill?.name ?? 'Design';
 			new Notice(`LumiSlate：开始 AI 渲染 (${modeLabel} · ${resolved.reason})`);
 
 			// 初始化统计
@@ -2582,6 +3182,7 @@ export default class LumiSlatePlugin extends Plugin {
 				startedAt: Date.now(),
 				deltaCount: 0,
 				outputBytes: 0,
+				skillName: skill?.name,
 			};
 			this.startMetricsTimer();
 			view.updateMetrics(this.currentRunStats);
@@ -2598,8 +3199,8 @@ export default class LumiSlatePlugin extends Plugin {
 					this.updateMetricsDisplay();
 				}
 				const preview = previewHtml(this.aiAccumulated);
-				const injected = injectInteractionScripts(preview);
-				view.renderCanvas(injected);
+				// 流式预览阶段不注入交互脚本：避免在不完整 DOM 上执行导致报错
+				view.renderStream(preview);
 			};
 
 			const handleDone = () => {
@@ -2616,10 +3217,13 @@ export default class LumiSlatePlugin extends Plugin {
 					return;
 				}
 
-				const finalHtml = injectInteractionScripts(this.aiAccumulated);
+				const extractedHtml = extractHtml(this.aiAccumulated);
+				const finalHtml = injectInteractionScripts(extractedHtml);
+				// 最终渲染：立即刷新，不等待 debounce
 				view.renderCanvas(finalHtml);
 				view.setStatus('渲染完成');
 				view.setExportEnabled(true);
+				view.setHasAccumulated(true);
 
 				// 写入缓存
 				if (renderNotePath) {
@@ -2652,7 +3256,7 @@ export default class LumiSlatePlugin extends Plugin {
 						onHtml: (text) => {
 							// Agent 通过 Write 工具输出的完整 HTML，直接替换
 							this.aiAccumulated = text;
-							const injected = injectInteractionScripts(text);
+							const injected = injectInteractionScripts(extractHtml(text));
 							view.renderCanvas(injected);
 						},
 						onMeta: (key, value) => {
@@ -2712,7 +3316,7 @@ export default class LumiSlatePlugin extends Plugin {
 	 * 自定义模式 — AI 驱动的预处理
 	 * @param type 'longform' 长文模式 | 'slide' 幻灯片模式
 	 */
-	async preprocessMarpCurrentNote(type: 'longform' | 'slide'): Promise<void> {
+	async preprocessCustomCurrentNote(type: 'longform' | 'slide'): Promise<void> {
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile || activeFile.extension !== 'md') {
 			new Notice('请先打开一个 Markdown 笔记');
@@ -2734,7 +3338,9 @@ export default class LumiSlatePlugin extends Plugin {
 
 		const markdown = await this.app.vault.read(activeFile);
 		const { body } = extractFrontmatter(markdown);
-		const prompt = type === 'longform' ? LONGFORM_PREPROCESS_PROMPT : SLIDE_PREPROCESS_PROMPT;
+		const prompt = type === 'longform'
+			? (this.settings.preprocessLongformPrompt?.trim() || LONGFORM_PREPROCESS_PROMPT)
+			: (this.settings.preprocessSlidePrompt?.trim() || SLIDE_PREPROCESS_PROMPT);
 
 		new Notice(`正在使用 AI 进行${type === 'longform' ? '长文' : '幻灯片'}预处理…`);
 
@@ -2793,9 +3399,9 @@ export default class LumiSlatePlugin extends Plugin {
 					.replace(/^lumislate_preprocess_type:.*$/m, '')
 					.replace(/^lumislate_preprocessed_at:.*$/m, '')
 					.replace(/\n{3,}/g, '\n');
-				newFrontmatter += `\nlumislate_preprocessed: true\nlumislate_preprocessed_for: marp\nlumislate_preprocess_type: ${type}\nlumislate_preprocessed_at: ${new Date().toISOString()}`;
+				newFrontmatter += `\nlumislate_preprocessed: true\nlumislate_preprocessed_for: custom\nlumislate_preprocess_type: ${type}\nlumislate_preprocessed_at: ${new Date().toISOString()}`;
 			} else {
-				newFrontmatter = `lumislate_preprocessed: true\nlumislate_preprocessed_for: marp\nlumislate_preprocess_type: ${type}\nlumislate_preprocessed_at: ${new Date().toISOString()}`;
+				newFrontmatter = `lumislate_preprocessed: true\nlumislate_preprocessed_for: custom\nlumislate_preprocess_type: ${type}\nlumislate_preprocessed_at: ${new Date().toISOString()}`;
 			}
 
 			const finalContent = `---\n${newFrontmatter.trim()}\n---\n\n${preprocessedBody}`;
@@ -2970,45 +3576,31 @@ export default class LumiSlatePlugin extends Plugin {
 		await saveHtmlToVault(this.app, html, targetPath);
 	}
 
-	// ------------------- Marp 模式专用工具 -------------------
+	// ------------------- 自定义模式专用工具 -------------------
 
-	/** 处理 Marp 尺寸比例切换 */
-	async handleMarpSizeChange(size: string): Promise<void> {
+	/** 处理自定义模式尺寸比例切换 */
+	async handleCustomSizeChange(size: string): Promise<void> {
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile || activeFile.extension !== 'md') {
 			new Notice('请先打开一个 Markdown 笔记');
 			return;
 		}
-		await this.updateMarpFrontmatterField('size', size);
+		await this.updateCustomFrontmatterField('size', size);
 		// 自动重新渲染使新比例生效
 		await this.renderCurrentNote();
 	}
 
-	/** CSS 系统提示词 JSON 文件路径 */
-	private getCssPromptFilePath(): string {
-		return `${this.manifest.dir}/css-system-prompt.json`;
-	}
-
-	/** 从 JSON 文件读取自定义 CSS 系统提示词，失败则返回默认 */
-	private async loadCssSystemPrompt(): Promise<string> {
-		const filePath = this.getCssPromptFilePath();
-		try {
-			const raw = await this.app.vault.adapter.read(filePath);
-			const data = JSON.parse(raw);
-			if (typeof data.systemPrompt === 'string' && data.systemPrompt.trim()) {
-				return data.systemPrompt.trim();
-			}
-		} catch {
-			// 文件不存在或解析失败，使用默认
-		}
-		return DEFAULT_CSS_SYSTEM_PROMPT;
+	/** 从设置中读取自定义 CSS 系统提示词 */
+	private loadCssSystemPrompt(): string {
+		const prompt = this.settings.cssSystemPrompt?.trim();
+		return prompt || DEFAULT_CSS_SYSTEM_PROMPT;
 	}
 
 	/** 组装完整的 CSS 系统提示词 */
-	private async getCssSystemPrompt(currentCss: string): Promise<string> {
-		const ruleBody = await this.loadCssSystemPrompt();
+	private getCssSystemPrompt(currentCss: string): string {
+		const ruleBody = this.loadCssSystemPrompt();
 
-		return `你是 LumiSlate 插件的 CSS 设计专家，专门帮助用户为 Marp 幻灯片模式编写自定义 CSS。
+		return `你是 LumiSlate 插件的 CSS 设计专家，专门帮助用户为 自定义模式编写自定义 CSS。
 
 ## 当前 CSS 代码
 \`\`\`css
@@ -3016,32 +3608,6 @@ ${currentCss || '/* 当前为空 */'}
 \`\`\`
 
 ${ruleBody}`;
-	}
-
-	/** 在 Obsidian 中打开 CSS 系统提示词 JSON 文件 */
-	async openCssSystemPromptFile(): Promise<void> {
-		const filePath = this.getCssPromptFilePath();
-
-		// 如果文件不存在，用默认内容创建
-		const exists = await this.app.vault.adapter.exists(filePath);
-		if (!exists) {
-			const defaultData = {
-				version: 1,
-				systemPrompt: DEFAULT_CSS_SYSTEM_PROMPT,
-			};
-			await this.app.vault.adapter.write(filePath, JSON.stringify(defaultData, null, 2));
-			new Notice('已创建默认提示词文件');
-		}
-
-		// 用 Obsidian 打开文件
-		const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
-		if (abstractFile instanceof TFile) {
-			const leaf = this.app.workspace.getLeaf();
-			await leaf.openFile(abstractFile);
-		} else {
-			// 如果 Obsidian 文件系统未识别，用系统方式打开
-			new Notice('文件已创建，请手动在 .obsidian/plugins/obsidian-lumislate/ 目录中编辑 css-system-prompt.json');
-		}
 	}
 
 	/** 在 AI 聊天面板中追加消息 */
@@ -3071,7 +3637,7 @@ ${ruleBody}`;
 		statusEl.textContent = '思考中…';
 		statusEl.addClass('lumislate-css-ai-status-active');
 
-		const systemPrompt = await this.getCssSystemPrompt(currentCss);
+		const systemPrompt = this.getCssSystemPrompt(currentCss);
 		const fullPrompt = `${systemPrompt}\n\n## 用户的请求\n${userPrompt}\n\n请输出修改后的完整 CSS 代码：`;
 
 		let cssResult = '';
@@ -3147,8 +3713,8 @@ ${ruleBody}`;
 		}
 	}
 
-	/** 显示 Marp CSS 编辑弹窗 — 三栏：左侧文件列表，中间代码编辑，右侧 AI 助手 */
-	async showMarpCssModal(): Promise<void> {
+	/** 显示自定义模式 CSS 编辑弹窗 — 三栏：左侧文件列表，中间代码编辑，右侧 AI 助手 */
+	async showCustomCssModal(): Promise<void> {
 		const cssDir = `${this.manifest.dir}/css`;
 
 		// 确保 css 目录存在
@@ -3497,7 +4063,7 @@ ${ruleBody}`;
 				new Notice('请先选择一个预设');
 				return;
 			}
-			await this.updateMarpFrontmatterField('lumislate_css', selectedFile);
+			await this.updateCustomFrontmatterField('lumislate_css', selectedFile);
 			new Notice(`已应用 CSS 预设: ${selectedFile}`);
 			// 自动重新渲染画布使样式生效
 			await this.renderCurrentNote();
@@ -3519,8 +4085,8 @@ ${ruleBody}`;
 		modal.open();
 	}
 
-	/** AI 辅助设计 Marp CSS */
-	private async aiDesignMarpCss(activeFile: TFile, textArea: TextAreaComponent): Promise<void> {
+	/** AI 辅助设计自定义模式 CSS */
+	private async aiDesignCustomCss(activeFile: TFile, textArea: TextAreaComponent): Promise<void> {
 		const resolved = this.resolveAIProvider();
 		if (resolved.provider === 'http' && !this.settings.apiKey) {
 			new Notice('未配置 AI：请在设置中选择本地 Agent 或配置 HTTP API Key');
@@ -3531,7 +4097,7 @@ ${ruleBody}`;
 		const { body } = extractFrontmatter(markdown);
 		const contentPreview = body.slice(0, 2000);
 
-		const prompt = `你是专业的 CSS 设计师。请为以下 Marp 幻灯片内容设计一套精美的 CSS 样式。
+		const prompt = `你是专业的 CSS 设计师。请为以下 自定义模式内容设计一套精美的 CSS 样式。
 
 要求：
 - 只输出纯 CSS 代码，不要任何解释性文字
@@ -3594,8 +4160,8 @@ ${contentPreview}
 		}
 	}
 
-	/** 更新当前笔记 frontmatter 中的 Marp 字段 */
-	private async updateMarpFrontmatterField(key: string, value: string): Promise<void> {
+	/** 更新当前笔记 frontmatter 中的自定义模式字段 */
+	private async updateCustomFrontmatterField(key: string, value: string): Promise<void> {
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile) return;
 
@@ -3665,7 +4231,8 @@ ${contentPreview}
 			if (event.data?.type === 'lumislate-text-change') {
 				const view = this.getLumiSlateView();
 				if (!view || event.source !== view.getIframeWindow()) return;
-				this.applyTextChange(event.data);
+				// 不再同步回 Markdown，仅提示用户
+				new Notice('HTML 内文字已修改（不会同步回 Markdown 源码）');
 				return;
 			}
 
@@ -3673,20 +4240,40 @@ ${contentPreview}
 				const skillId = event.data?.skillId as string;
 				const view = this.getLumiSlateView();
 				if (!view || event.source !== view.getIframeWindow()) return;
-				view.setSelectedSkill(skillId);
-				this.saveSettings();
-				setTimeout(() => this.aiRenderCurrentNote(), 50);
+				this.handleSkillSelect(skillId);
 				return;
 			}
 
 			if (event.data?.type === 'lumislate-select-mode') {
 				const mode = event.data?.mode as Mode;
-				if (mode === 'marp' || mode === 'design') {
+				if (mode === "custom" || mode === 'design') {
 					this.handleWelcomeModeSelect(mode);
 				}
 				return;
 			}
+
+			if (event.data?.type === 'lumislate-open-settings') {
+				this.openSettingsTab();
+				return;
+			}
 		});
+	}
+
+	/** 打开设置面板并切换到 AI 标签 */
+	private openSettingsTab(): void {
+		// @ts-expect-error 内部 API
+		this.app.setting.open();
+		// @ts-expect-error 内部 API
+		this.app.setting.openTabById(this.manifest.id);
+	}
+
+	/** 检查 AI 是否已配置 */
+	private isAiConfigured(): boolean {
+		const resolved = this.resolveAIProvider();
+		if (resolved.provider === 'local') {
+			return !!resolved.agentId;
+		}
+		return !!this.settings.apiKey;
 	}
 
 	/** 处理欢迎页模式选择 */
@@ -3706,13 +4293,41 @@ ${contentPreview}
 		await this.refreshViewContext();
 
 		// 自定义模式：自动降级渲染当前笔记
-		if (mode === 'marp') {
+		if (mode === "custom") {
 			await this.renderCurrentNote();
 		}
-		// AI模式：显示启动界面
+		// AI模式：检查AI配置，未配置则显示引导页
 		if (mode === 'design') {
-			view.renderCanvas(getDesignLauncherHTML(SKILLS, this.settings.defaultSkill));
+			if (!this.isAiConfigured()) {
+				view.renderCanvas(getAiGuideHTML());
+			} else {
+				view.renderCanvas(getDesignLauncherHTML(SKILLS, this.settings.defaultSkill));
+			}
 		}
+	}
+
+	/** 处理 iframe 内 skill 选择，弹出确认弹窗 */
+	private handleSkillSelect(skillId: string): void {
+		const skill = getSkillById(skillId);
+		if (!skill) return;
+
+		const view = this.getLumiSlateView();
+		if (view) {
+			view.setSelectedSkill(skillId);
+			this.saveSettings();
+		}
+
+		new SkillConfirmModal(
+			this.app,
+			skill,
+			() => {
+				// 确认：开始 AI 渲染
+				this.aiRenderCurrentNote();
+			},
+			() => {
+				// 取消：无操作
+			}
+		).open();
 	}
 
 	private applyTextChange(data: {
@@ -3812,23 +4427,40 @@ ${contentPreview}
 	}
 
 	/** 清除 Design 模式缓存并重置到启动界面 */
-	async clearDesignCache(): Promise<void> {
+	/** 处理清除排版：有缓存直接清除，无缓存询问是否保存 */
+	async handleClearLayout(): Promise<void> {
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile || activeFile.extension !== 'md') {
 			new Notice('请先打开一个 Markdown 笔记');
 			return;
 		}
 
-		await this.cacheManager.clearCache(activeFile.path);
-		this.aiAccumulated = '';
-
 		const view = this.getLumiSlateView();
-		if (view) {
-			view.renderCanvas(getDesignLauncherHTML(SKILLS, this.settings.defaultSkill));
-			view.setExportEnabled(false);
-			view.setContextInfo(activeFile.basename, false, false, false);
+		if (!view) return;
+
+		// 检查是否有缓存内容
+		const markdown = await this.app.vault.read(activeFile);
+		const { frontmatter } = extractFrontmatter(markdown);
+		const prompt = extractFrontmatterValue(frontmatter, 'lumislate_prompt');
+		const cachedHtml = await this.cacheManager.readCache(activeFile.path, markdown, prompt);
+
+		// 有缓存 = 已保存过，直接清除
+		// 无缓存但有 aiAccumulated = 尚未保存，询问
+		if (!cachedHtml && this.aiAccumulated) {
+			const shouldSave = confirm('当前排版尚未保存，是否导出为 HTML 后再清除？');
+			if (shouldSave) {
+				this.exportHtmlDownload();
+			}
 		}
 
-		new Notice('已清除当前笔记缓存');
+		await this.cacheManager.clearCache(activeFile.path);
+		this.aiAccumulated = '';
+		view.setHasAccumulated(false);
+
+		view.renderCanvas(getDesignLauncherHTML(SKILLS, this.settings.defaultSkill));
+		view.setExportEnabled(false);
+		view.setContextInfo(activeFile.basename, false, false, false);
+
+		new Notice('已清除排版');
 	}
 }

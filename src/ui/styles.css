@@ -642,6 +642,161 @@
 	padding-top: 4px;
 }
 
+/* ===== 设置面板可折叠区域 ===== */
+.lumislate-collapsible-section {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	margin-bottom: 16px;
+	overflow: hidden;
+}
+
+.lumislate-collapsible-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px 16px;
+	cursor: pointer;
+	background: var(--background-secondary);
+	transition: background 0.15s ease;
+	user-select: none;
+}
+
+.lumislate-collapsible-header:hover {
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-collapsible-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	color: var(--text-muted);
+	flex-shrink: 0;
+}
+
+.lumislate-collapsible-icon svg {
+	width: 16px;
+	height: 16px;
+}
+
+.lumislate-collapsible-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.lumislate-collapsible-content {
+	padding: 12px 16px 16px;
+	background: var(--background-primary);
+}
+
+.lumislate-collapsible-section.expanded {
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-css-prompt-textarea {
+	width: 100%;
+	min-height: 200px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-family: var(--font-monospace);
+	font-size: 13px;
+	line-height: 1.6;
+	resize: vertical;
+}
+
+.lumislate-css-prompt-textarea:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-settings-section-title {
+	margin-top: 24px;
+	margin-bottom: 4px;
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.lumislate-settings-subsection-title {
+	margin-top: 16px;
+	margin-bottom: 4px;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+/* ===== 系统提示词设置块 ===== */
+.lumislate-system-prompt-block {
+	margin-bottom: 16px;
+	padding: 12px;
+	background: var(--background-secondary);
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.lumislate-system-prompt-label {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+	margin-bottom: 8px;
+}
+
+.lumislate-system-prompt-textarea {
+	width: 100%;
+	min-height: 160px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-family: var(--font-monospace);
+	font-size: 13px;
+	line-height: 1.6;
+	resize: vertical;
+	margin-bottom: 10px;
+}
+
+.lumislate-system-prompt-textarea:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-system-prompt-skill-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 10px;
+	font-size: 13px;
+}
+
+.lumislate-system-prompt-skill-label {
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.lumislate-system-prompt-skill-select {
+	padding: 4px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.lumislate-system-prompt-skill-select:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.lumislate-system-prompt-btn-row {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
 /* ===== AI 辅助面板 ===== */
 .lumislate-css-right {
 	width: 320px;
@@ -1021,4 +1176,42 @@
 .lumislate-status-warning {
 	color: var(--text-error);
 	font-size: 13px;
+}
+
+/* ===== Skill 确认弹窗 ===== */
+.lumislate-skill-confirm-header {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.lumislate-skill-confirm-icon {
+	width: 40px;
+	height: 40px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 10px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+	flex-shrink: 0;
+}
+
+.lumislate-skill-confirm-icon svg {
+	width: 22px;
+	height: 22px;
+}
+
+.lumislate-skill-confirm-name {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--text-normal);
+}
+
+.lumislate-skill-confirm-desc {
+	font-size: 13px;
+	color: var(--text-muted);
+	line-height: 1.6;
+	margin-bottom: 8px;
 }

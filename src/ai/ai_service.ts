@@ -214,6 +214,37 @@ export function previewHtml(streamed: string): string {
 	return html + '\n</body>\n</html>';
 }
 
+/**
+ * 从完整 HTML 中提取 body 内的内容（用于宿主页增量更新）
+ */
+export function extractBodyContent(html: string): string {
+	if (!html) return '';
+
+	// 找 <body> 标签
+	const bodyStartMatch = html.match(/<body[^>]*>/i);
+	if (!bodyStartMatch) {
+		// 没有 body 标签，返回整个 HTML（可能是纯内容片段）
+		return html;
+	}
+
+	const bodyStart = bodyStartMatch.index! + bodyStartMatch[0].length;
+
+	// 找 </body> 或 </html> 或文档结尾
+	const bodyEndMatch = html.match(/<\/body>/i);
+	const htmlEndMatch = html.match(/<\/html>/i);
+
+	let bodyEnd: number;
+	if (bodyEndMatch) {
+		bodyEnd = bodyEndMatch.index!;
+	} else if (htmlEndMatch) {
+		bodyEnd = htmlEndMatch.index!;
+	} else {
+		bodyEnd = html.length;
+	}
+
+	return html.slice(bodyStart, bodyEnd).trim();
+}
+
 function escapeHtml(s: string): string {
 	return s
 		.replace(/&/g, '&amp;')

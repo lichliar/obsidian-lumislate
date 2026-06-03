@@ -265,8 +265,17 @@ export function resolveOnPath(bin: string): string | null {
 	return null;
 }
 
+// 模块级缓存：避免每次调用都扫描 PATH
+let _cachedAgents: DetectedAgent[] | null = null;
+
 export function detectAgents(): DetectedAgent[] {
-	return AGENTS.map((a): DetectedAgent => {
+	if (_cachedAgents) return _cachedAgents;
+	return refreshAgents();
+}
+
+/** 强制重新扫描 PATH 检测 agent（设置页面调用） */
+export function refreshAgents(): DetectedAgent[] {
+	_cachedAgents = AGENTS.map((a): DetectedAgent => {
 		const protocol = a.protocol ?? 'stdin';
 		const base = {
 			id: a.id,
@@ -288,6 +297,7 @@ export function detectAgents(): DetectedAgent[] {
 		}
 		return { ...base, available: false };
 	});
+	return _cachedAgents;
 }
 
 /** 获取单个 agent 的检测状态 */

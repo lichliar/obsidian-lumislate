@@ -90,8 +90,8 @@ export function preprocessMarkdown(markdown: string, modeOrSkillId: string): str
 
 	// mode / skill 特定处理
 	switch (modeOrSkillId) {
-		case 'marp':
-			// Marp 模式: 保留 --- 分页符, 不做任何删除
+		case 'custom':
+			// 自定义模式: 保留 --- 分页符, 不做任何删除
 			// headingDivider 支持由 AI 在渲染时处理
 			break;
 		case 'blog-post':
@@ -155,6 +155,13 @@ export async function findPreprocessedFile(
 	return file instanceof TFile ? file : null;
 }
 
+/** 兼容旧版 'marp' mode ID */
+function isModeMatch(preprocessedFor: string, modeOrSkillId: string): boolean {
+	if (preprocessedFor === modeOrSkillId) return true;
+	if (modeOrSkillId === 'custom' && preprocessedFor === 'marp') return true;
+	return false;
+}
+
 /**
  * 检查预处理状态
  * 1. 先检查当前文件自身的 frontmatter 标记
@@ -171,7 +178,7 @@ export async function checkPreprocessedState(
 	if (frontmatter) {
 		const isPreprocessed = extractFrontmatterValue(frontmatter, 'lumislate_preprocessed') === 'true';
 		const preprocessedFor = extractFrontmatterValue(frontmatter, 'lumislate_preprocessed_for');
-		if (isPreprocessed && preprocessedFor === modeOrSkillId) {
+		if (isPreprocessed && isModeMatch(preprocessedFor, modeOrSkillId)) {
 			return { preprocessed: true, file, skillId: modeOrSkillId };
 		}
 	}
@@ -184,7 +191,7 @@ export async function checkPreprocessedState(
 		if (pf) {
 			const isPreprocessed = extractFrontmatterValue(pf, 'lumislate_preprocessed') === 'true';
 			const preprocessedFor = extractFrontmatterValue(pf, 'lumislate_preprocessed_for');
-			if (isPreprocessed && preprocessedFor === modeOrSkillId) {
+			if (isPreprocessed && isModeMatch(preprocessedFor, modeOrSkillId)) {
 				return { preprocessed: true, file: preprocessedFile, skillId: modeOrSkillId };
 			}
 		}

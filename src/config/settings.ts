@@ -1,7 +1,8 @@
-import { App, PluginSettingTab, Setting, setIcon, Notice, Modal } from 'obsidian';
+import { App, PluginSettingTab, Setting, setIcon, Notice } from 'obsidian';
 import type LumiSlatePlugin from '../core/main';
-import { SKILLS, MODES, type Mode } from '../ai/skills';
-import { detectAgents } from '../ai/local_agent';
+import { MODES, type Mode } from '../ai/skills';
+import { LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT } from '../ai/skills';
+import { detectAgents, refreshAgents } from '../ai/local_agent';
 
 export interface LumiSlateSettings {
 	aiProvider: 'local' | 'http';
@@ -13,86 +14,126 @@ export interface LumiSlateSettings {
 	localAgent: string;
 	localAgentBinOverride: string;
 	defaultExportFolder: string;
-	/** 各 mode / skill 对应的预处理 prompt，key 为 modeId 或 skillId */
-	preprocessPrompts: Record<string, string>;
-	/** Marp CSS 预设列表 */
-	marpCssPresets: Array<{ name: string; css: string }>;
-	/** 界面主题 */
-	theme: 'light' | 'dark' | 'system' | 'custom';
-	/** 自定义主题主色 */
-	customThemePrimary: string;
 	/** 界面语言 */
 	language: 'en' | 'zh-cn';
 	/** 禁用 AI 输出中的 insight / thinking / analysis 等额外标记 */
 	disableAiExtras: boolean;
+	/** 自定义模式 CSS 系统提示词 */
+	cssSystemPrompt: string;
+	/** 长文模式预处理系统提示词 */
+	preprocessLongformPrompt: string;
+	/** 幻灯片模式预处理系统提示词 */
+	preprocessSlidePrompt: string;
 }
 
-const DEFAULT_PREPROCESS_PROMPTS: Record<string, string> = {
-	marp: '请确保 Markdown 中的 --- 分页符格式正确，清理多余的空行，保证每个幻灯片页面内容清晰。',
-};
-
 /** 默认 CSS 系统提示词（用于 AI 辅助 CSS 编辑） */
-export const DEFAULT_CSS_SYSTEM_PROMPT = `## LumiSlate CSS 架构规范（必须遵守）
+export const DEFAULT_CSS_SYSTEM_PROMPT = `## LumiSlate 自定义模式 CSS 架构规范（必须遵守）
 
-### 1. 选择器规范
-- 幻灯片本体用 \`section\` 选择器设置视觉样式
-- **不要使用 \`.slide\`**：这是插件布局引擎的保留类，对其设置样式会被强制覆盖或无效
-- 子元素用 \`section h1\`、\`section p\`、\`section ul\`、\`section .callout\` 等
+### 1. 架构概述
+自定义模式将 Markdown 按 \`---\` 分页符切分为若干页，每页渲染为一个 \`<section>\` 元素。
+- 所有样式必须使用 \`section\` 作为根选择器（如 \`section h1\`、\`section p\`）
+- **严禁使用 \`.slide\` 类选择器**：这是插件布局引擎的保留类，对其设置样式会被强制覆盖
+- 插件在 :root 中预定义 \`--ls-*\` CSS 变量，覆盖它们可改变全局默认值
 
-### 2. 不可覆盖的规则（插件强制，用户 CSS 中设置无效）
-以下属性由插件强制执行，请勿在输出中依赖它们：
-- \`.slide\` 的 \`width\` / \`height\` —— 由 frontmatter \`size\` 字段控制（16:9=1280x720, 4:3=1024x768, 1:1=800x800）
-- \`.slide\` 的 \`transform-origin: 0 0\` —— 缩放算法的锚点
-- \`.slide\` 的 \`position: relative\`、\`flex-shrink: 0\`、\`overflow: visible\`
-- \`#marp-deck\` 和 \`.slide-wrapper\` 的 flex 布局结构
+### 2. Markdown → HTML 元素映射（CSS 编写核心依据）
+自定义模式使用标准 Markdown 渲染引擎，以下内容会被转换为对应的 HTML 标签。你的 CSS 必须为**每一种**元素提供精心设计的样式：
 
-### 3. 可自由覆盖的基础样式
-- 幻灯片整体：background、color、font-family、padding、border-radius、box-shadow、border
-- 标题：font-size、color、margin、font-weight
-- 段落：margin、color、font-size、line-height
-- 列表：margin、color、list-style-type
-- 表格：border、background、color、padding
-- 引用块：border-left、color、background
-- 页码：\`.slide-paginate\` 的 font-size、color、opacity
+#### 2.1 标题体系（必须建立清晰层级）
+| Markdown | HTML | CSS 要求 |
+|----------|------|----------|
+| \`# H1\` | \`<h1>\` | 幻灯片主标题，字号最大（建议 2.5-3rem），字重 bold，上下 margin 充足 |
+| \`## H2\` | \`<h2>\` | 章节标题，比 H1 小 20%（建议 2-2.2rem），颜色可略浅 |
+| \`### H3\` | \`<h3>\` | 小节标题（建议 1.5-1.7rem），与正文有明确区分 |
+| \`#### H4\` | \`<h4>\` | 子标题（建议 1.2-1.3rem），**不可与正文同大小** |
+| \`##### H5\` | \`<h5>\` | 辅助标题（建议 1.05-1.1rem），可加颜色区分 |
+| \`###### H6\` | \`<h6>\` | 最小标题（建议 0.95-1rem），通常用作标签或元信息 |
 
-### 4. CSS 变量覆盖
-插件在 :root 中定义 \`--ls-*\` 系列变量，可覆盖它们改变全局默认值：
+**选择器**：\`section h1\` ~ \`section h6\`
+**关键**：H1-H6 必须形成递减的字号阶梯，不可出现 H3 比 H2 大或 H4 与正文同大小的情况。
+
+#### 2.2 段落与文本修饰
+| Markdown | HTML | CSS 要求 |
+|----------|------|----------|
+| 普通段落 | \`<p>\` | line-height: 1.6-1.8，适当 margin-bottom（0.5-0.8em） |
+| \`**粗体**\` | \`<strong>\` | font-weight: 700 或 600，颜色可略亮于正文 |
+| \`*斜体*\` | \`<em>\` | font-style: italic，可附加轻微颜色偏移 |
+| \`~~删除线~~\` | \`<del>\` | text-decoration: line-through，颜色略淡（如 opacity: 0.6） |
+| \`==高亮==\` | \`<mark>\` | **必须**设计醒目的高亮样式：如黄色半透明底色（rgba(255,215,0,0.3)）+ 圆角 padding（2px 6px） |
+| \`<u>下划线</u>\` | \`<u>\` | 使用带颜色偏移的下划线（如 border-bottom: 2px solid var(--ls-accent)），避免默认样式的生硬感 |
+| \`[链接](url)\` | \`<a>\` | color 使用主题强调色，hover 时加下划线或颜色变化，transition: all 0.2s |
+| \`行内代码\` | \`<code>\`（行内） | 等宽字体、轻微背景色（与幻灯片背景形成对比）、圆角 padding（2px 4px）、字号略小（0.9em） |
+
+#### 2.3 列表（无序/有序/任务）
+| Markdown | HTML | CSS 要求 |
+|----------|------|----------|
+| \`- 项目\` | \`<ul><li>\` | 左侧缩进一致（padding-left: 1.5em），list-style 可使用自定义符号（如圆点、方块） |
+| \`1. 项目\` | \`<ol><li>\` | 数字/字母序号样式清晰，与正文对齐 |
+| \`- [ ] 任务\` | 自定义 HTML（CSS/SVG 勾选框） | **严禁使用原生 \`<input type="checkbox">\`**。用 CSS/SVG 绘制：未勾选时为空方框，勾选时显示 ✓ 符号 + 添加删除线效果（text-decoration: line-through） |
+
+**选择器**：\`section ul\`、\`section ol\`、\`section li\`
+**关键**：列表项间距要均匀（margin-bottom: 0.3-0.5em），嵌套列表缩进清晰。
+
+#### 2.4 代码块
+Markdown 代码块渲染为 \`<pre>\` 包裹 \`<code>\` 的结构。
+- **块级选择器**：\`section pre\`、\`section pre code\`
+- **样式要求**：与幻灯片背景形成对比的深色背景（如 #1e293b）、等宽字体（font-family: 'Fira Code', monospace）、圆角（border-radius: 8px）、适当 padding（12-16px）、控制 max-height（如 400px，防止溢出幻灯片）
+- **行内选择器**：\`section code\`（已在 2.2 中说明）
+
+#### 2.5 表格
+| Markdown | HTML | CSS 要求 |
+|----------|------|----------|
+| \`\| 表头 \| 数据 \|\` | \`<table><thead><tbody><tr><th><td>\` | 清晰的边框（border-collapse）、表头背景色突出、行交替色（striped rows）、cell padding 充足（8-12px） |
+
+**选择器**：\`section table\`、\`section th\`、\`section td\`
+**防截断策略**：列数多或行数多时容易溢出幻灯片 → 优先缩小字体（如 0.7rem）和 cell padding；仍溢出时用 \`transform: scale(0.85)\` 整体缩放（transform-origin: top left）。
+
+#### 2.6 引用块
+| Markdown | HTML | CSS 要求 |
+|----------|------|----------|
+| \`> 引用\` | \`<blockquote>\` | 左侧彩色边框（border-left: 4px solid var(--ls-accent)）、轻微背景色、内部 padding（12-16px）、斜体或略淡的文字色 |
+
+#### 2.7 水平线
+| Markdown | HTML | CSS 要求 |
+|----------|------|----------|
+| \`---\` | \`<hr>\` | 简洁优雅的分隔线：border: none、border-top: 1px solid var(--ls-border)、适当 margin（1.5em 0）、可使用渐变或虚线增强视觉效果 |
+
+#### 2.8 Callout（警告框）
+渲染为 \`<div class="callout callout-{type}">\`，内含 \`.callout-title\` 和 \`.callout-content\`。
+- **类型**：note/tip/warning/danger/question/example 等
+- **样式要求**：左侧彩色边框（类型决定颜色，如 note=blue, warning=orange, danger=red）+ 轻微背景色 + 圆角，与整体风格协调
+- **选择器**：\`section .callout\`、\`section .callout-title\`、\`section .callout-content\`、\`section .callout-note\` 等类型选择器
+
+#### 2.9 图片
+插件已为图片提供基础样式，你只需覆盖视觉效果：
+- **单图**：\`section img\` → border-radius、box-shadow、border
+- **双图并排**：父容器 flex + gap，子元素各约 48% 宽度
+- **多图网格**：grid 布局（如 3 列），图片固定高度 + object-fit: cover
+- **约束**：图片不要超出幻灯片边界，必要时限制 max-height（如 45%）
+
+#### 2.10 数学公式
+KaTeX 渲染的数学公式，块级可加背景容器。
+- **选择器**：\`section .katex\`、\`section .katex-display\`
+- **要求**：确保深色/浅色背景都有足够对比度，块级公式可加轻微背景色容器
+
+### 3. 幻灯片整体布局规范
+- **幻灯片本体选择器**：\`section\`（不要使用 \`.slide\`）
+- **可自由覆盖**：background、color、font-family、padding、border-radius、box-shadow、border
+- **尺寸约束**：由 frontmatter \`size\` 字段控制（16:9=1280x720, 4:3=1024x768, 1:1=800x800），CSS 中不可覆盖
+- **页码**：\`.slide-paginate\` 的 font-size、color、opacity
+
+### 4. CSS 变量体系
+插件在 :root 中定义以下变量，推荐优先使用它们以确保一致性：
 - \`--ls-body-bg\` / \`--ls-body-color\`：页面背景/文字色
 - \`--ls-slide-bg\` / \`--ls-slide-radius\` / \`--ls-slide-padding\`：幻灯片样式
-- \`--ls-h1-size\` / \`--ls-h1-weight\` / \`--ls-h1-margin\`：H1 样式（同理 H2/H3）
+- \`--ls-h1-size\` / \`--ls-h1-weight\` / \`--ls-h1-margin\`：H1 样式（同理 H2-H6）
+- \`--ls-accent\`：主题强调色，用于链接、边框、高亮等
 
-### 5. 代码块样式
-渲染为 \`<pre>\` 包裹 \`<code>\` 的结构。选择器：\`section pre\`、\`section pre code\`（块级）、\`section code\`（行内）。
-推荐：与幻灯片背景形成对比的深色背景、等宽字体、圆角、适当 padding。控制 max-height 防止溢出幻灯片。
-
-### 6. 图片样式
-插件已为图片提供基础样式（max-width: 100%、圆角等），你只需覆盖视觉效果：
-- 单图：\`section img\`，可覆盖 border-radius、box-shadow
-- 双图并排：父容器 flex + gap，子元素各约 48% 宽度
-- 多图网格：grid 布局（如 3 列），图片固定高度 + object-fit: cover
-- 图片不要超出幻灯片边界，必要时限制 max-height（如 45%）
-- 深色背景下，白边图片可通过 border 或 background 过渡
-
-### 7. 巨量长数据表格防截断
-列数多或行数多时容易溢出幻灯片：
-- **优先策略**：缩小字体（如 0.7rem）和 cell padding，表格 width: 100% + table-layout: fixed
-- 仍溢出时：用 \`transform: scale(0.85)\` 整体缩放（transform-origin: top left）
-- 表头固定 + 行交替色帮助阅读超长表格
-
-### 8. Callout 样式
-渲染为 \`<div class="callout callout-{type}">\`，内含 \`.callout-title\` 和 \`.callout-content\`。
-类型包括 note/tip/warning/danger/question/example 等。推荐：左侧彩色边框 + 轻微背景，与整体风格协调。
-
-### 9. Markdown 全语法样式要求（核心）
-**你必须为所有主流 Markdown 语法提供精心设计的 CSS**，包括但不限于：
-- **标准语法**：H1-H6、段落、粗体 \`<strong>\`、斜体 \`<em>\`、删除线 \`<del>\`、行内代码 \`<code>\`、代码块 \`<pre>\`、链接 \`<a>\`、无序/有序列表、表格、引用块 \`<blockquote>\`、水平线 \`<hr>\`
-- **扩展语法**：高亮 \`<mark>\`（醒目背景色如黄色半透明 + 圆角 padding）、下划线 \`<u>\`（带颜色偏移的优雅下划线）、H4-H6（清晰字号层级，不可与正文同大小）、任务列表（CSS/SVG 绘制美观勾选框，已勾选可添加删除线效果）、数学公式（KaTeX 渲染，块级可加背景容器，确保深色/浅色背景都有足够对比度）
-
-### 10. 输出要求
+### 5. 输出要求
 - 输出**完整**的 CSS 代码（含原有内容和你的修改）
 - 不要添加 markdown 代码围栏（如 \`\`\`css\`）
 - 不要包含任何解释性文字，只输出纯 CSS
-- 保持代码整洁，适当缩进`;
+- 保持代码整洁，适当缩进
+- **覆盖所有上述 Markdown 元素的选择器**，不要遗漏任何一种`;
 
 export const DEFAULT_SETTINGS: LumiSlateSettings = {
 	aiProvider: 'local',
@@ -104,16 +145,11 @@ export const DEFAULT_SETTINGS: LumiSlateSettings = {
 	localAgent: '',
 	localAgentBinOverride: '',
 	defaultExportFolder: '',
-	preprocessPrompts: { ...DEFAULT_PREPROCESS_PROMPTS },
-	marpCssPresets: [
-		{ name: '默认深色', css: 'section { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); color: #e2e8f0; }' },
-		{ name: '纯白简约', css: 'section { background: #ffffff; color: #1a1a1a; }' },
-		{ name: '暖色渐变', css: 'section { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: #e94560; }' },
-	],
-	theme: 'system',
-	customThemePrimary: '#6366f1',
 	language: 'zh-cn',
 	disableAiExtras: true,
+	cssSystemPrompt: DEFAULT_CSS_SYSTEM_PROMPT,
+	preprocessLongformPrompt: LONGFORM_PREPROCESS_PROMPT,
+	preprocessSlidePrompt: SLIDE_PREPROCESS_PROMPT,
 };
 
 // ============================================================
@@ -124,13 +160,7 @@ const I18N = {
 	'zh-cn': {
 		settingsTitle: 'LumiSlate 设置',
 		tabGeneral: '常规',
-		tabAppearance: '外观',
-		tabAi: 'AI 接入',
-		tabAdvanced: '高级',
-		defaultMode: '默认模式',
-		defaultModeDesc: 'Marp 模式用于生成幻灯片，Design 模式用于美化排版',
-		defaultSkill: '默认 SKILL',
-		defaultSkillDesc: 'AI 渲染时默认使用的排版模板',
+		tabAi: 'AI 设置',
 		defaultExportFolder: '默认导出目录',
 		defaultExportFolderDesc: '保存 HTML 到 Vault 时的默认文件夹路径（相对 Vault 根目录），留空则使用当前笔记所在目录',
 		defaultExportFolderPlaceholder: '例如: exports',
@@ -138,14 +168,6 @@ const I18N = {
 		languageDesc: '选择插件界面的显示语言',
 		langZhCn: '简体中文',
 		langEn: 'English',
-		theme: '主题',
-		themeDesc: '选择插件界面的配色主题',
-		themeLight: '浅色',
-		themeDark: '深色',
-		themeSystem: '跟随系统',
-		themeCustom: '自定义',
-		customThemePrimary: '自定义主色',
-		customThemePrimaryDesc: '自定义主题下的强调色',
 		aiProvider: '首选接入方式',
 		aiProviderDesc: '优先使用本地 CLI Agent（如已安装），或回退到 HTTP API',
 		aiProviderLocal: '本地 CLI Agent（优先）',
@@ -170,17 +192,20 @@ const I18N = {
 		apiRefTitle: '常用 API 配置参考',
 		disableAiExtras: '禁用 AI 额外输出',
 		disableAiExtrasDesc: '开启后，AI 渲染时将禁止输出 insight、thinking、analysis 等额外标记，避免干扰 HTML 渲染',
-		cssPromptTitle: '自定义模式 CSS 系统提示词',
-		cssPromptDesc: '系统提示词以 JSON 文件形式存储在插件目录中。点击按钮在 Obsidian 中打开编辑。修改保存后，下次打开 CSS 编辑器时生效。',
-		openPromptFile: '打开提示词文件',
+		sectionAiAccess: 'AI 接入配置',
+		sectionSystemPrompts: '系统提示词设置',
 		preprocessTitle: '文本预处理',
-		preprocessDesc: '自定义模式的预处理配置（向后兼容）。实际预处理 Prompt 已内置在插件中，AI 模式不再使用预处理。',
-		marpCssPresetsTitle: 'Marp CSS 预设',
-		marpCssPresetsDesc: '管理 Marp 幻灯片的 CSS 预设样式，可在 CSS 编辑弹窗中快速应用。',
-		noPresets: '暂无预设',
-		editCss: '编辑 CSS',
-		addPreset: '+ 添加新预设',
-		presetUpdated: 'CSS 预设已更新',
+		preprocessDesc: '自定义文本预处理时 AI 遵循的系统提示词。修改保存后，在自定义模式中使用预处理功能时立即生效。',
+		cssDesignTitle: 'CSS 设计',
+		cssDesignDesc: '自定义 AI 辅助 CSS 编辑时遵循的系统提示词。修改保存后，下次打开 CSS 编辑器时立即生效。',
+		promptLongformLabel: '长文模式',
+		promptSlideLabel: '幻灯片模式',
+		useSkillLabel: '使用 Skill',
+		useSkillPlaceholder: '暂不可用',
+		btnSave: '确认保存',
+		btnReset: '重置为默认',
+		promptSaved: '系统提示词已保存',
+		promptReset: '已重置为默认',
 		noAgentDetected: '未检测到任何本地 CLI Agent。支持的工具有：',
 		agentDetected: (n: number) => `检测到 ${n} 个可用 Agent`,
 		agentNotDetected: (n: number) => `未检测到 (${n})`,
@@ -194,13 +219,7 @@ const I18N = {
 	en: {
 		settingsTitle: 'LumiSlate Settings',
 		tabGeneral: 'General',
-		tabAppearance: 'Appearance',
-		tabAi: 'AI Access',
-		tabAdvanced: 'Advanced',
-		defaultMode: 'Default Mode',
-		defaultModeDesc: 'Marp mode for slides, Design mode for styled layouts',
-		defaultSkill: 'Default SKILL',
-		defaultSkillDesc: 'Default template for AI rendering',
+		tabAi: 'AI Settings',
 		defaultExportFolder: 'Default Export Folder',
 		defaultExportFolderDesc: 'Default folder for saving HTML to Vault (relative to Vault root). Leave empty to use current note directory.',
 		defaultExportFolderPlaceholder: 'e.g. exports',
@@ -208,14 +227,6 @@ const I18N = {
 		languageDesc: 'Select the plugin interface language',
 		langZhCn: '简体中文',
 		langEn: 'English',
-		theme: 'Theme',
-		themeDesc: 'Choose the plugin interface color theme',
-		themeLight: 'Light',
-		themeDark: 'Dark',
-		themeSystem: 'System',
-		themeCustom: 'Custom',
-		customThemePrimary: 'Custom Primary Color',
-		customThemePrimaryDesc: 'Accent color for custom theme',
 		aiProvider: 'Preferred Provider',
 		aiProviderDesc: 'Use local CLI Agent (if installed) or fallback to HTTP API',
 		aiProviderLocal: 'Local CLI Agent (Preferred)',
@@ -240,17 +251,20 @@ const I18N = {
 		apiRefTitle: 'Common API Configurations',
 		disableAiExtras: 'Disable AI Extra Output',
 		disableAiExtrasDesc: 'When enabled, AI rendering will suppress insight, thinking, analysis, and other extra markers to avoid interfering with HTML rendering',
-		cssPromptTitle: 'Custom Mode CSS System Prompt',
-		cssPromptDesc: 'System prompts are stored as JSON in the plugin directory. Click to open and edit in Obsidian. Changes take effect next time the CSS editor opens.',
-		openPromptFile: 'Open Prompt File',
+		sectionAiAccess: 'AI Access Configuration',
+		sectionSystemPrompts: 'System Prompt Settings',
 		preprocessTitle: 'Text Preprocessing',
-		preprocessDesc: 'Custom mode preprocessing config (backward compatible). Actual preprocess prompts are built into the plugin. AI mode no longer uses preprocessing.',
-		marpCssPresetsTitle: 'Marp CSS Presets',
-		marpCssPresetsDesc: 'Manage CSS preset styles for Marp slides, quickly applicable in the CSS editor.',
-		noPresets: 'No presets',
-		editCss: 'Edit CSS',
-		addPreset: '+ Add New Preset',
-		presetUpdated: 'CSS preset updated',
+		preprocessDesc: 'Custom system prompt for AI text preprocessing. Changes take effect immediately when using the preprocess feature in custom mode.',
+		cssDesignTitle: 'CSS Design',
+		cssDesignDesc: 'Custom system prompt for AI-assisted CSS editing. Changes take effect immediately the next time the CSS editor opens.',
+		promptLongformLabel: 'Longform',
+		promptSlideLabel: 'Slide',
+		useSkillLabel: 'Use Skill',
+		useSkillPlaceholder: 'Not available',
+		btnSave: 'Save',
+		btnReset: 'Reset to Default',
+		promptSaved: 'System prompt saved',
+		promptReset: 'Reset to default',
 		noAgentDetected: 'No local CLI Agent detected. Supported tools: ',
 		agentDetected: (n: number) => `${n} agent(s) available`,
 		agentNotDetected: (n: number) => `Not detected (${n})`,
@@ -304,6 +318,9 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
+		// 设置页打开时刷新 agent 列表（用户可能刚安装了新 CLI）
+		refreshAgents();
+
 		const { containerEl } = this;
 		containerEl.empty();
 
@@ -314,9 +331,7 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 		const tabNav = containerEl.createEl('div', { cls: 'lumislate-settings-tabs' });
 		const tabs = [
 			{ id: 'general', label: t(p, 'tabGeneral'), icon: 'settings' },
-			{ id: 'appearance', label: t(p, 'tabAppearance'), icon: 'palette' },
 			{ id: 'ai', label: t(p, 'tabAi'), icon: 'bot' },
-			{ id: 'advanced', label: t(p, 'tabAdvanced'), icon: 'sliders-horizontal' },
 		];
 		for (const tab of tabs) {
 			const btn = tabNav.createEl('button', {
@@ -337,14 +352,8 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 			case 'general':
 				this.renderGeneralTab(contentEl);
 				break;
-			case 'appearance':
-				this.renderAppearanceTab(contentEl);
-				break;
 			case 'ai':
 				this.renderAiTab(contentEl);
-				break;
-			case 'advanced':
-				this.renderAdvancedTab(contentEl);
 				break;
 		}
 	}
@@ -352,39 +361,6 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 	/** 常规设置 */
 	private renderGeneralTab(containerEl: HTMLElement): void {
 		const p = this.plugin;
-
-		new Setting(containerEl)
-			.setName(t(p, 'defaultMode'))
-			.setDesc(t(p, 'defaultModeDesc'))
-			.addDropdown((dropdown) => {
-				for (const mode of MODES) {
-					dropdown.addOption(mode.id, mode.name);
-				}
-				dropdown
-					.setValue(p.settings.defaultMode)
-					.onChange(async (value) => {
-						p.settings.defaultMode = value as Mode;
-						await p.saveSettings();
-						this.display();
-					});
-			});
-
-		if (p.settings.defaultMode === 'design') {
-			new Setting(containerEl)
-				.setName(t(p, 'defaultSkill'))
-				.setDesc(t(p, 'defaultSkillDesc'))
-				.addDropdown((dropdown) => {
-					for (const skill of SKILLS) {
-						dropdown.addOption(skill.id, skill.name);
-					}
-					dropdown
-						.setValue(p.settings.defaultSkill)
-						.onChange(async (value) => {
-							p.settings.defaultSkill = value;
-							await p.saveSettings();
-						});
-				});
-		}
 
 		// 语言设置
 		new Setting(containerEl)
@@ -416,307 +392,248 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 			);
 	}
 
-	/** 外观设置 */
-	private renderAppearanceTab(containerEl: HTMLElement): void {
-		const p = this.plugin;
-
-		new Setting(containerEl)
-			.setName(t(p, 'theme'))
-			.setDesc(t(p, 'themeDesc'))
-			.addDropdown((dropdown) => {
-				dropdown.addOption('light', t(p, 'themeLight'));
-				dropdown.addOption('dark', t(p, 'themeDark'));
-				dropdown.addOption('system', t(p, 'themeSystem'));
-				dropdown.addOption('custom', t(p, 'themeCustom'));
-				dropdown
-					.setValue(p.settings.theme)
-					.onChange(async (value) => {
-						p.settings.theme = value as 'light' | 'dark' | 'system' | 'custom';
-						await p.saveSettings();
-						this.applyTheme();
-						this.display();
-					});
-			});
-
-		if (p.settings.theme === 'custom') {
-			new Setting(containerEl)
-				.setName(t(p, 'customThemePrimary'))
-				.setDesc(t(p, 'customThemePrimaryDesc'))
-				.addText((text) => {
-					text.inputEl.type = 'color';
-					text
-						.setValue(p.settings.customThemePrimary)
-						.onChange(async (value) => {
-							p.settings.customThemePrimary = value;
-							await p.saveSettings();
-							this.applyTheme();
-						});
-				});
-		}
-	}
-
-	/** 应用主题到设置面板 */
-	private applyTheme(): void {
-		const { containerEl } = this;
-		const theme = this.plugin.settings.theme;
-		const isDark =
-			theme === 'dark' ||
-			(theme === 'system' &&
-				window.matchMedia('(prefers-color-scheme: dark)').matches);
-
-		containerEl.classList.remove('lumislate-theme-light', 'lumislate-theme-dark');
-		if (theme === 'light' || (theme === 'system' && !isDark)) {
-			containerEl.classList.add('lumislate-theme-light');
-		} else if (theme === 'dark' || theme === 'system') {
-			containerEl.classList.add('lumislate-theme-dark');
-		}
-
-		if (theme === 'custom') {
-			containerEl.style.setProperty('--ls-custom-primary', this.plugin.settings.customThemePrimary);
-		} else {
-			containerEl.style.removeProperty('--ls-custom-primary');
-		}
-	}
-
-	/** AI 接入设置 */
+	/** AI 设置 */
 	private renderAiTab(containerEl: HTMLElement): void {
 		const p = this.plugin;
 
-		new Setting(containerEl)
-			.setName(t(p, 'aiProvider'))
-			.setDesc(t(p, 'aiProviderDesc'))
-			.addDropdown((dropdown) => {
-				dropdown
-					.addOption('local', t(p, 'aiProviderLocal'))
-					.addOption('http', t(p, 'aiProviderHttp'));
-				dropdown
-					.setValue(p.settings.aiProvider)
-					.onChange(async (value) => {
-						p.settings.aiProvider = value as 'local' | 'http';
-						await p.saveSettings();
-						this.display();
-					});
-			});
-
-		new Setting(containerEl)
-			.setName(t(p, 'disableAiExtras'))
-			.setDesc(t(p, 'disableAiExtrasDesc'))
-			.addToggle((toggle) =>
-				toggle
-					.setValue(p.settings.disableAiExtras)
-					.onChange(async (value) => {
-						p.settings.disableAiExtras = value;
-						await p.saveSettings();
-					})
-			);
-
-		if (p.settings.aiProvider === 'local') {
-			containerEl.createEl('h3', { text: t(p, 'localAgentTitle') });
-
-			this.renderAgentCards(containerEl);
-
-			new Setting(containerEl)
-				.setName(t(p, 'customBinPath'))
-				.setDesc(t(p, 'customBinPathDesc'))
-				.addText((text) =>
-					text
-						.setPlaceholder(t(p, 'customBinPathPlaceholder'))
-						.setValue(p.settings.localAgentBinOverride)
+		// ==== 折叠区域 1：AI 接入配置 ====
+		this.renderCollapsibleSection(containerEl, t(p, 'sectionAiAccess'), (el) => {
+			new Setting(el)
+				.setName(t(p, 'aiProvider'))
+				.setDesc(t(p, 'aiProviderDesc'))
+				.addDropdown((dropdown) => {
+					dropdown
+						.addOption('local', t(p, 'aiProviderLocal'))
+						.addOption('http', t(p, 'aiProviderHttp'));
+					dropdown
+						.setValue(p.settings.aiProvider)
 						.onChange(async (value) => {
-							p.settings.localAgentBinOverride = value.trim();
+							p.settings.aiProvider = value as 'local' | 'http';
 							await p.saveSettings();
-						})
-				);
-
-			new Setting(containerEl)
-				.setName(t(p, 'redetect'))
-				.setDesc(t(p, 'redetectDesc'))
-				.addButton((btn) => {
-					btn.setButtonText(t(p, 'redetectBtn'));
-					btn.onClick(() => {
-						p.detectLocalAgents();
-						this.display();
-					});
-				});
-		}
-
-		if (p.settings.aiProvider === 'http') {
-			containerEl.createEl('h3', { text: t(p, 'httpApiTitle') });
-
-			new Setting(containerEl)
-				.setName(t(p, 'apiBaseUrl'))
-				.setDesc(t(p, 'apiBaseUrlDesc'))
-				.addText((text) =>
-					text
-						.setPlaceholder('https://api.moonshot.cn/v1/chat/completions')
-						.setValue(p.settings.apiBaseUrl)
-						.onChange(async (value) => {
-							p.settings.apiBaseUrl = value.trim();
-							await p.saveSettings();
-						})
-				);
-
-			new Setting(containerEl)
-				.setName(t(p, 'apiKey'))
-				.setDesc(t(p, 'apiKeyDesc'))
-				.addText((text) => {
-					text.inputEl.type = 'password';
-					text
-						.setPlaceholder('sk-...')
-						.setValue(p.settings.apiKey)
-						.onChange(async (value) => {
-							p.settings.apiKey = value.trim();
-							await p.saveSettings();
+							this.display();
 						});
 				});
 
-			new Setting(containerEl)
-				.setName(t(p, 'model'))
-				.setDesc(t(p, 'modelDesc'))
-				.addText((text) =>
-					text
-						.setPlaceholder('kimi-latest')
-						.setValue(p.settings.model)
+			new Setting(el)
+				.setName(t(p, 'disableAiExtras'))
+				.setDesc(t(p, 'disableAiExtrasDesc'))
+				.addToggle((toggle) =>
+					toggle
+						.setValue(p.settings.disableAiExtras)
 						.onChange(async (value) => {
-							p.settings.model = value.trim();
+							p.settings.disableAiExtras = value;
 							await p.saveSettings();
 						})
 				);
 
-			containerEl.createEl('h4', { text: t(p, 'apiRefTitle') });
-			const ref = containerEl.createEl('ul');
-			ref.createEl('li', { text: 'Kimi: https://api.moonshot.cn/v1/chat/completions' });
-			ref.createEl('li', { text: 'DeepSeek: https://api.deepseek.com/v1/chat/completions' });
-			ref.createEl('li', { text: 'OpenRouter: https://openrouter.ai/api/v1/chat/completions' });
-			ref.createEl('li', { text: 'SiliconFlow: https://api.siliconflow.cn/v1/chat/completions' });
-		}
+			if (p.settings.aiProvider === 'local') {
+				el.createEl('h3', { text: t(p, 'localAgentTitle') });
 
-		// CSS 系统提示词文件管理
-		containerEl.createEl('h3', { text: t(p, 'cssPromptTitle') });
-		containerEl.createEl('p', {
-			text: t(p, 'cssPromptDesc'),
-			cls: 'setting-item-description',
-		});
+				this.renderAgentCards(el);
 
-		const openPromptBtn = containerEl.createEl('button', { text: t(p, 'openPromptFile') });
-		openPromptBtn.addClass('lumislate-btn', 'lumislate-btn-primary');
-		openPromptBtn.style.marginBottom = '16px';
-		openPromptBtn.addEventListener('click', () => {
-			p.openCssSystemPromptFile();
-		});
-	}
+				new Setting(el)
+					.setName(t(p, 'customBinPath'))
+					.setDesc(t(p, 'customBinPathDesc'))
+					.addText((text) =>
+						text
+							.setPlaceholder(t(p, 'customBinPathPlaceholder'))
+							.setValue(p.settings.localAgentBinOverride)
+							.onChange(async (value) => {
+								p.settings.localAgentBinOverride = value.trim();
+								await p.saveSettings();
+							})
+					);
 
-	/** 高级设置 */
-	private renderAdvancedTab(containerEl: HTMLElement): void {
-		const p = this.plugin;
-
-		// 自定义模式预处理提示词（向后兼容，实际 prompt 已内置在代码中）
-		containerEl.createEl('h3', { text: t(p, 'preprocessTitle') });
-		containerEl.createEl('p', {
-			text: t(p, 'preprocessDesc'),
-			cls: 'setting-item-description',
-		});
-
-		this.renderPreprocessSetting(containerEl, 'marp', '自定义模式');
-
-		containerEl.createEl('h3', { text: t(p, 'marpCssPresetsTitle') });
-		containerEl.createEl('p', {
-			text: t(p, 'marpCssPresetsDesc'),
-			cls: 'setting-item-description',
-		});
-
-		const presetList = containerEl.createEl('div');
-		this.renderCssPresetList(presetList);
-	}
-
-	/** 渲染 CSS 预设列表 */
-	private renderCssPresetList(containerEl: HTMLElement): void {
-		containerEl.empty();
-		const p = this.plugin;
-		const presets = p.settings.marpCssPresets;
-
-		if (presets.length === 0) {
-			containerEl.createEl('p', { text: t(p, 'noPresets'), cls: 'setting-item-description' });
-		}
-
-		for (let i = 0; i < presets.length; i++) {
-			const preset = presets[i];
-			const row = containerEl.createEl('div', { cls: 'lumislate-preset-row' });
-			row.style.display = 'flex';
-			row.style.gap = '8px';
-			row.style.alignItems = 'center';
-			row.style.marginBottom = '8px';
-
-			const nameInput = row.createEl('input');
-			nameInput.type = 'text';
-			nameInput.value = preset.name;
-			nameInput.style.flex = '1';
-			nameInput.addEventListener('change', async () => {
-				p.settings.marpCssPresets[i].name = nameInput.value;
-				await p.saveSettings();
-			});
-
-			const cssBtn = row.createEl('button', { text: t(p, 'editCss') });
-			cssBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
-			cssBtn.addEventListener('click', () => {
-				const modal = new Modal(this.app);
-				modal.setTitle(`${preset.name}`);
-				const wrap = modal.contentEl.createEl('div');
-				const ta = wrap.createEl('textarea');
-				ta.value = preset.css;
-				ta.rows = 8;
-				ta.style.width = '100%';
-				ta.style.fontFamily = 'monospace';
-				const btnWrap = wrap.createEl('div', { cls: 'lumislate-modal-buttons' });
-				const saveBtn = btnWrap.createEl('button', { text: 'Save' });
-				saveBtn.addClass('lumislate-btn', 'lumislate-btn-primary');
-				saveBtn.addEventListener('click', async () => {
-					p.settings.marpCssPresets[i].css = ta.value;
-					await p.saveSettings();
-					modal.close();
-					new Notice(t(p, 'presetUpdated'));
-				});
-				const cancelBtn = btnWrap.createEl('button', { text: 'Cancel' });
-				cancelBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
-				cancelBtn.addEventListener('click', () => modal.close());
-				modal.open();
-			});
-
-			const delBtn = row.createEl('button');
-			setIcon(delBtn, 'trash-2');
-			delBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
-			delBtn.addEventListener('click', async () => {
-				p.settings.marpCssPresets.splice(i, 1);
-				await p.saveSettings();
-				this.renderCssPresetList(containerEl);
-			});
-		}
-
-		const addBtn = containerEl.createEl('button', { text: t(p, 'addPreset') });
-		addBtn.addClass('lumislate-btn', 'lumislate-btn-primary');
-		addBtn.style.marginTop = '8px';
-		addBtn.addEventListener('click', async () => {
-			p.settings.marpCssPresets.push({ name: 'New Preset', css: 'section { background: #0f172a; color: #e2e8f0; }' });
-			await p.saveSettings();
-			this.renderCssPresetList(containerEl);
-		});
-	}
-
-	/** 渲染单个预处理 prompt 设置项 */
-	private renderPreprocessSetting(containerEl: HTMLElement, key: string, label: string): void {
-		const current = this.plugin.settings.preprocessPrompts[key] ?? '';
-		new Setting(containerEl)
-			.setName(label)
-			.addTextArea((text) => {
-				text.inputEl.rows = 3;
-				text.inputEl.style.width = '100%';
-				text.setPlaceholder('输入预处理说明 prompt…')
-					.setValue(current)
-					.onChange(async (value) => {
-						this.plugin.settings.preprocessPrompts[key] = value.trim();
-						await this.plugin.saveSettings();
+				new Setting(el)
+					.setName(t(p, 'redetect'))
+					.setDesc(t(p, 'redetectDesc'))
+					.addButton((btn) => {
+						btn.setButtonText(t(p, 'redetectBtn'));
+						btn.onClick(() => {
+							p.detectLocalAgents();
+							this.display();
+						});
 					});
+			}
+
+			if (p.settings.aiProvider === 'http') {
+				el.createEl('h3', { text: t(p, 'httpApiTitle') });
+
+				new Setting(el)
+					.setName(t(p, 'apiBaseUrl'))
+					.setDesc(t(p, 'apiBaseUrlDesc'))
+					.addText((text) =>
+						text
+							.setPlaceholder('https://api.moonshot.cn/v1/chat/completions')
+							.setValue(p.settings.apiBaseUrl)
+							.onChange(async (value) => {
+								p.settings.apiBaseUrl = value.trim();
+								await p.saveSettings();
+							})
+					);
+
+				new Setting(el)
+					.setName(t(p, 'apiKey'))
+					.setDesc(t(p, 'apiKeyDesc'))
+					.addText((text) => {
+						text.inputEl.type = 'password';
+						text
+							.setPlaceholder('sk-...')
+							.setValue(p.settings.apiKey)
+							.onChange(async (value) => {
+								p.settings.apiKey = value.trim();
+								await p.saveSettings();
+							});
+					});
+
+				new Setting(el)
+					.setName(t(p, 'model'))
+					.setDesc(t(p, 'modelDesc'))
+					.addText((text) =>
+						text
+							.setPlaceholder('kimi-latest')
+							.setValue(p.settings.model)
+							.onChange(async (value) => {
+								p.settings.model = value.trim();
+								await p.saveSettings();
+							})
+					);
+
+				el.createEl('h4', { text: t(p, 'apiRefTitle') });
+				const ref = el.createEl('ul');
+				ref.createEl('li', { text: 'Kimi: https://api.moonshot.cn/v1/chat/completions' });
+				ref.createEl('li', { text: 'DeepSeek: https://api.deepseek.com/v1/chat/completions' });
+				ref.createEl('li', { text: 'OpenRouter: https://openrouter.ai/api/v1/chat/completions' });
+				ref.createEl('li', { text: 'SiliconFlow: https://api.siliconflow.cn/v1/chat/completions' });
+			}
+		}, true);
+
+		// ==== 折叠区域 2：系统提示词设置 ====
+		this.renderCollapsibleSection(containerEl, t(p, 'sectionSystemPrompts'), (el) => {
+			// ---- 文本预处理 ----
+			el.createEl('h3', { text: t(p, 'preprocessTitle'), cls: 'lumislate-settings-subsection-title' });
+			el.createEl('p', {
+				text: t(p, 'preprocessDesc'),
+				cls: 'setting-item-description',
 			});
+
+			// 长文模式提示词
+			this.renderSystemPromptBlock(el, {
+				label: t(p, 'promptLongformLabel'),
+				getValue: () => p.settings.preprocessLongformPrompt,
+				setValue: (v) => { p.settings.preprocessLongformPrompt = v; },
+				defaultValue: LONGFORM_PREPROCESS_PROMPT,
+			});
+
+			// 幻灯片模式提示词
+			this.renderSystemPromptBlock(el, {
+				label: t(p, 'promptSlideLabel'),
+				getValue: () => p.settings.preprocessSlidePrompt,
+				setValue: (v) => { p.settings.preprocessSlidePrompt = v; },
+				defaultValue: SLIDE_PREPROCESS_PROMPT,
+			});
+
+			// ---- CSS 设计 ----
+			el.createEl('h3', { text: t(p, 'cssDesignTitle'), cls: 'lumislate-settings-subsection-title' });
+			el.createEl('p', {
+				text: t(p, 'cssDesignDesc'),
+				cls: 'setting-item-description',
+			});
+
+			this.renderSystemPromptBlock(el, {
+				label: t(p, 'cssDesignTitle'),
+				getValue: () => p.settings.cssSystemPrompt,
+				setValue: (v) => { p.settings.cssSystemPrompt = v; },
+				defaultValue: DEFAULT_CSS_SYSTEM_PROMPT,
+			});
+		}, false);
+	}
+
+	/** 渲染单个系统提示词编辑块 */
+	private renderSystemPromptBlock(
+		containerEl: HTMLElement,
+		options: {
+			label: string;
+			getValue: () => string;
+			setValue: (v: string) => void;
+			defaultValue: string;
+		}
+	): void {
+		const p = this.plugin;
+		const block = containerEl.createEl('div', { cls: 'lumislate-system-prompt-block' });
+
+		// 标签
+		block.createEl('div', { text: options.label, cls: 'lumislate-system-prompt-label' });
+
+		// 文本输入框
+		const textAreaEl = block.createEl('textarea', {
+			cls: 'lumislate-system-prompt-textarea',
+		});
+		textAreaEl.value = options.getValue();
+		textAreaEl.rows = 8;
+		textAreaEl.style.width = '100%';
+		textAreaEl.style.fontFamily = 'var(--font-monospace)';
+
+		// 使用 Skill（预留，disabled）
+		const skillRow = block.createEl('div', { cls: 'lumislate-system-prompt-skill-row' });
+		skillRow.createEl('span', { text: t(p, 'useSkillLabel') + '：', cls: 'lumislate-system-prompt-skill-label' });
+		const skillSelect = skillRow.createEl('select', { cls: 'lumislate-system-prompt-skill-select' });
+		skillSelect.disabled = true;
+		const opt = skillSelect.createEl('option');
+		opt.text = t(p, 'useSkillPlaceholder');
+		opt.value = '';
+
+		// 按钮行
+		const btnRow = block.createEl('div', { cls: 'lumislate-system-prompt-btn-row' });
+
+		const saveBtn = btnRow.createEl('button', { text: t(p, 'btnSave') });
+		saveBtn.addClass('lumislate-btn', 'lumislate-btn-primary');
+		saveBtn.addEventListener('click', async () => {
+			options.setValue(textAreaEl.value.trim());
+			await p.saveSettings();
+			new Notice(t(p, 'promptSaved'));
+		});
+
+		const resetBtn = btnRow.createEl('button', { text: t(p, 'btnReset') });
+		resetBtn.addClass('lumislate-btn', 'lumislate-btn-ghost');
+		resetBtn.addEventListener('click', () => {
+			textAreaEl.value = options.defaultValue;
+			options.setValue(options.defaultValue);
+			p.saveSettings();
+			new Notice(t(p, 'promptReset'));
+		});
+	}
+
+	/** 渲染可折叠区域 */
+	private renderCollapsibleSection(
+		containerEl: HTMLElement,
+		title: string,
+		renderContent: (el: HTMLElement) => void,
+		defaultExpanded: boolean = false
+	): void {
+		const section = containerEl.createEl('div', { cls: 'lumislate-collapsible-section' });
+		if (defaultExpanded) {
+			section.classList.add('expanded');
+		}
+
+		const header = section.createEl('div', { cls: 'lumislate-collapsible-header' });
+		const icon = header.createEl('span', { cls: 'lumislate-collapsible-icon' });
+		setIcon(icon, defaultExpanded ? 'chevron-down' : 'chevron-right');
+		header.createEl('span', { cls: 'lumislate-collapsible-title', text: title });
+
+		const content = section.createEl('div', { cls: 'lumislate-collapsible-content' });
+		if (!defaultExpanded) {
+			content.style.display = 'none';
+		}
+
+		header.addEventListener('click', () => {
+			const isExpanded = content.style.display !== 'none';
+			content.style.display = isExpanded ? 'none' : 'block';
+			setIcon(icon, isExpanded ? 'chevron-right' : 'chevron-down');
+			section.classList.toggle('expanded', !isExpanded);
+		});
+
+		renderContent(content);
 	}
 
 	/** 渲染本地 Agent 图形化卡片网格 */
