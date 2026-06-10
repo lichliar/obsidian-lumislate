@@ -1,0 +1,1217 @@
+/* LumiSlate 插件样式 */
+
+/* 画布容器 */
+.lumislate-canvas-container {
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+
+/* 主内容区 */
+.lumislate-main {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+
+/* 工具栏 */
+.lumislate-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 12px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+	flex-wrap: wrap;
+}
+
+/* 顶部工具栏中的操作按钮容器 */
+.lumislate-toolbar-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+/* 主页按钮激活高亮 */
+.lumislate-btn-ghost.active,
+.lumislate-btn-icon.active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+/* 上下文信息 */
+.lumislate-context-group {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.lumislate-context-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+
+.lumislate-context-preprocess {
+	color: var(--text-success);
+	font-weight: 500;
+}
+
+.lumislate-context-cache {
+	color: var(--interactive-accent);
+	font-weight: 500;
+}
+
+/* 底部操作栏（已合并到顶部，样式保留兼容） */
+.lumislate-action-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 12px;
+	background: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+/* 底部状态栏 */
+.lumislate-status-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 4px 12px;
+	background: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.lumislate-status-left,
+.lumislate-status-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.lumislate-status-item {
+	white-space: nowrap;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.lumislate-status-item.status-error {
+	color: var(--text-error);
+	font-weight: 500;
+}
+
+.lumislate-action-group {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.lumislate-skill-select {
+	padding: 4px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 13px;
+	cursor: pointer;
+	min-width: 140px;
+}
+
+.lumislate-toolbar-btns {
+	display: flex;
+	gap: 6px;
+	margin-left: auto;
+	flex-wrap: wrap;
+}
+
+.lumislate-btn {
+	padding: 5px 12px;
+	border-radius: 4px;
+	font-size: 12px;
+	font-weight: 600;
+	cursor: pointer;
+	border: 1px solid transparent;
+	transition: opacity 0.15s ease;
+}
+
+.lumislate-btn:hover {
+	opacity: 0.85;
+}
+
+.lumislate-btn-primary {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.lumislate-btn-ghost {
+	background: transparent;
+	color: var(--text-muted);
+	border-color: var(--background-modifier-border);
+}
+
+.lumislate-status {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-left: 8px;
+	white-space: nowrap;
+}
+
+/* iframe 沙盒 */
+.lumislate-canvas-iframe {
+	width: 100%;
+	flex: 1;
+	border: none;
+	background: var(--background-primary);
+}
+
+/* Agent 控制台（预留） */
+.lumislate-agent-panel {
+	position: absolute;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	padding: 12px 16px;
+	background: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.lumislate-agent-input {
+	flex: 1;
+	padding: 8px 12px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 14px;
+}
+
+.lumislate-agent-input:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+/* 技能标签 */
+.lumislate-skill-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	border-radius: 4px;
+	font-size: 11px;
+	font-weight: 600;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+/* 指标栏 */
+.lumislate-metrics-bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 16px;
+	padding: 4px 12px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	font-family: var(--font-monospace), 'SF Mono', Monaco, monospace;
+	min-height: 28px;
+}
+
+.lumislate-metric-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 1px 7px;
+	border-radius: 10px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.lumislate-metric-status.status-running {
+	background: rgba(var(--interactive-accent-rgb), 0.15);
+	color: var(--interactive-accent);
+}
+
+.lumislate-metric-status.status-done {
+	background: rgba(31, 122, 58, 0.12);
+	color: var(--text-success);
+}
+
+.lumislate-metric-status.status-error {
+	background: rgba(156, 42, 37, 0.12);
+	color: var(--text-error);
+}
+
+.lumislate-pulse-dot {
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+	animation: lumislate-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes lumislate-pulse {
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+.lumislate-metric {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 4px;
+	white-space: nowrap;
+}
+
+.lumislate-metric-label {
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.12em;
+	color: var(--text-faint);
+}
+
+.lumislate-metric-value {
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-muted);
+}
+
+.lumislate-metric-value.live {
+	color: var(--interactive-accent);
+	font-weight: 500;
+}
+
+/* 图标按钮 */
+.lumislate-btn-icon {
+	padding: 5px 8px;
+	font-size: 14px;
+	line-height: 1;
+}
+
+/* 小按钮 */
+.lumislate-btn-small {
+	padding: 4px 10px;
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+/* 导出菜单 */
+.lumislate-export-menu {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 8px;
+}
+
+.lumislate-export-item {
+	padding: 10px 12px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.15s ease;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.lumislate-export-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-export-item-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-normal);
+	margin-bottom: 2px;
+}
+
+.lumislate-export-item-desc {
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+/* Modal 按钮容器 */
+.lumislate-modal-buttons {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	margin-top: 20px;
+	padding-top: 16px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* 模式切换标签 */
+.lumislate-mode-tabs {
+	display: flex;
+	gap: 2px;
+	padding: 2px;
+	background: var(--background-modifier-form-field);
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.lumislate-mode-tab {
+	padding: 4px 12px;
+	border-radius: 4px;
+	font-size: 12px;
+	font-weight: 600;
+	cursor: pointer;
+	border: none;
+	background: transparent;
+	color: var(--text-muted);
+	transition: all 0.15s ease;
+}
+
+.lumislate-mode-tab:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-mode-tab.active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+/* 设置面板文本域 */
+.lumislate-setting-textarea {
+	width: 100%;
+	min-height: 80px;
+	font-family: var(--font-monospace), monospace;
+	font-size: 13px;
+	resize: vertical;
+}
+
+/* 危险/取消按钮 */
+.lumislate-btn-danger {
+	background: var(--background-modifier-error);
+	color: var(--text-on-accent);
+}
+
+.lumislate-btn-danger:hover {
+	opacity: 0.85;
+}
+
+/* 禁用状态 */
+.lumislate-btn:disabled,
+.lumislate-skill-select:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+/* 技能选择器在底部栏中的样式 */
+.lumislate-action-group .lumislate-skill-select {
+	min-width: 140px;
+}
+
+/* ===== CSS 编辑器弹窗 ===== */
+.lumislate-css-modal {
+	width: 95vw;
+	max-width: 1400px;
+	min-height: 60vh;
+}
+
+.lumislate-css-modal .modal-content {
+	height: calc(60vh - 60px);
+	overflow: hidden;
+}
+
+.lumislate-css-editor {
+	display: flex;
+	gap: 0;
+	height: 100%;
+	overflow: hidden;
+}
+
+/* 左侧面板 */
+.lumislate-css-left {
+	width: 220px;
+	min-width: 180px;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	border-right: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+}
+
+.lumislate-css-left-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+.lumislate-css-left-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.lumislate-css-newfile {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	align-items: center;
+}
+
+.lumislate-css-newfile-input {
+	flex: 1 1 0;
+	min-width: 0;
+	padding: 5px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 12px;
+}
+
+.lumislate-css-newfile .lumislate-btn {
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+
+.lumislate-css-file-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 4px;
+}
+
+.lumislate-css-file-item {
+	padding: 7px 10px;
+	border-radius: 4px;
+	font-size: 12px;
+	font-family: var(--font-monospace), monospace;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background 0.12s ease;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lumislate-css-file-item:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.lumislate-css-file-item.active {
+	background: rgba(var(--interactive-accent-rgb), 0.15);
+	color: var(--interactive-accent);
+	font-weight: 600;
+}
+
+.lumislate-css-file-empty {
+	color: var(--text-faint);
+	font-style: italic;
+	cursor: default;
+}
+
+.lumislate-css-file-empty:hover {
+	background: transparent;
+	color: var(--text-faint);
+}
+
+.lumislate-css-rename-input {
+	width: 100%;
+	padding: 3px 6px;
+	border-radius: 3px;
+	border: 1px solid var(--interactive-accent);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 12px;
+	font-family: var(--font-monospace), monospace;
+	outline: none;
+}
+
+/* 中间面板：代码编辑 */
+.lumislate-css-center {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	padding: 12px 16px;
+	gap: 10px;
+}
+
+.lumislate-css-path {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace), monospace;
+	padding: 4px 8px;
+	background: var(--background-secondary);
+	border-radius: 4px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lumislate-css-textarea {
+	flex: 1;
+	width: 100%;
+	min-height: 200px;
+	resize: none;
+	font-family: var(--font-monospace), 'SF Mono', Monaco, monospace;
+	font-size: 13px;
+	line-height: 1.5;
+	padding: 10px 12px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+}
+
+.lumislate-css-textarea:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-css-right-actions {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	padding-top: 8px;
+	border-top: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+/* ===== 设置面板 Tab 导航 ===== */
+.lumislate-settings-tabs {
+	display: flex;
+	gap: 4px;
+	padding: 4px;
+	background: var(--background-modifier-form-field);
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
+	margin-bottom: 24px;
+	width: fit-content;
+}
+
+.lumislate-settings-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 14px;
+	border-radius: 6px;
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+	border: none;
+	background: transparent;
+	color: var(--text-muted);
+	transition: all 0.15s ease;
+}
+
+.lumislate-settings-tab:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-settings-tab.active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.lumislate-settings-content {
+	padding-top: 4px;
+}
+
+/* ===== 设置面板可折叠区域 ===== */
+.lumislate-collapsible-section {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	margin-bottom: 16px;
+	overflow: hidden;
+}
+
+.lumislate-collapsible-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px 16px;
+	cursor: pointer;
+	background: var(--background-secondary);
+	transition: background 0.15s ease;
+	user-select: none;
+}
+
+.lumislate-collapsible-header:hover {
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-collapsible-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	color: var(--text-muted);
+	flex-shrink: 0;
+}
+
+.lumislate-collapsible-icon svg {
+	width: 16px;
+	height: 16px;
+}
+
+.lumislate-collapsible-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.lumislate-collapsible-content {
+	padding: 12px 16px 16px;
+	background: var(--background-primary);
+}
+
+.lumislate-collapsible-section.expanded {
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-css-prompt-textarea {
+	width: 100%;
+	min-height: 200px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-family: var(--font-monospace);
+	font-size: 13px;
+	line-height: 1.6;
+	resize: vertical;
+}
+
+.lumislate-css-prompt-textarea:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-settings-section-title {
+	margin-top: 24px;
+	margin-bottom: 4px;
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.lumislate-settings-subsection-title {
+	margin-top: 16px;
+	margin-bottom: 4px;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+/* ===== 系统提示词设置块 ===== */
+.lumislate-system-prompt-block {
+	margin-bottom: 16px;
+	padding: 12px;
+	background: var(--background-secondary);
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.lumislate-system-prompt-label {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+	margin-bottom: 8px;
+}
+
+.lumislate-system-prompt-textarea {
+	width: 100%;
+	min-height: 160px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-family: var(--font-monospace);
+	font-size: 13px;
+	line-height: 1.6;
+	resize: vertical;
+	margin-bottom: 10px;
+}
+
+.lumislate-system-prompt-textarea:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.lumislate-system-prompt-skill-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 10px;
+	font-size: 13px;
+}
+
+.lumislate-system-prompt-skill-label {
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.lumislate-system-prompt-skill-select {
+	padding: 4px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.lumislate-system-prompt-skill-select:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.lumislate-system-prompt-btn-row {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+/* ===== AI 辅助面板 ===== */
+.lumislate-css-right {
+	width: 320px;
+	min-width: 280px;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	border-left: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+}
+
+.lumislate-css-ai-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+.lumislate-css-ai-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.lumislate-css-ai-status {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-weight: 500;
+}
+
+.lumislate-css-ai-status-active {
+	color: var(--interactive-accent);
+	animation: lumislate-pulse 1.5s ease-in-out infinite;
+}
+
+.lumislate-css-ai-chat {
+	flex: 1;
+	overflow-y: auto;
+	padding: 10px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.lumislate-css-ai-msg {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.lumislate-css-ai-msg-role {
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-faint);
+}
+
+.lumislate-css-ai-msg-content {
+	font-size: 12px;
+	line-height: 1.55;
+	color: var(--text-normal);
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--font-monospace), 'SF Mono', Monaco, monospace;
+	background: var(--background-primary);
+	padding: 8px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.lumislate-css-ai-msg-user .lumislate-css-ai-msg-content {
+	background: rgba(var(--interactive-accent-rgb), 0.08);
+	border-color: rgba(var(--interactive-accent-rgb), 0.2);
+}
+
+.lumislate-css-ai-input-wrap {
+	padding: 10px 12px;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.lumislate-css-ai-input {
+	width: 100%;
+	resize: none;
+	font-family: var(--font-monospace), 'SF Mono', Monaco, monospace;
+	font-size: 12px;
+	line-height: 1.5;
+	padding: 8px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	min-height: 48px;
+}
+
+.lumislate-css-ai-input:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+/* ===== 右键菜单 ===== */
+.lumislate-context-menu {
+	position: absolute;
+	z-index: 1000;
+	min-width: 120px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+	overflow: hidden;
+}
+
+.lumislate-context-menu-item {
+	padding: 8px 14px;
+	font-size: 13px;
+	color: var(--text-normal);
+	cursor: pointer;
+	transition: background 0.1s ease;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.lumislate-context-menu-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-context-menu-item.danger {
+	color: var(--text-error);
+}
+
+.lumislate-context-menu-item.danger:hover {
+	background: rgba(var(--background-modifier-error-rgb), 0.1);
+}
+
+/* ===== Skill Gallery ===== */
+.lumislate-skill-select-btn {
+	min-width: 120px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.lumislate-skill-gallery-modal {
+	padding: 4px 0;
+}
+
+.lumislate-skill-gallery-title {
+	margin: 0 0 6px;
+	font-size: 18px;
+	font-weight: 700;
+	color: var(--text-normal);
+}
+
+.lumislate-skill-gallery-subtitle {
+	margin: 0 0 20px;
+	font-size: 13px;
+	color: var(--text-muted);
+	line-height: 1.5;
+}
+
+.lumislate-skill-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 12px;
+}
+
+.lumislate-skill-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 16px;
+	border-radius: 10px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.lumislate-skill-card:hover {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 2px 8px rgba(var(--interactive-accent-rgb), 0.08);
+	transform: translateY(-1px);
+}
+
+.lumislate-skill-card.active {
+	border-color: var(--interactive-accent);
+	background: rgba(var(--interactive-accent-rgb), 0.06);
+	box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.lumislate-skill-card-icon {
+	width: 36px;
+	height: 36px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+	margin-bottom: 4px;
+}
+
+.lumislate-skill-card-icon svg {
+	width: 20px;
+	height: 20px;
+}
+
+.lumislate-skill-card-name {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.lumislate-skill-card-desc {
+	font-size: 12px;
+	color: var(--text-muted);
+	line-height: 1.45;
+	flex: 1;
+}
+
+.lumislate-skill-card-badge {
+	align-self: flex-start;
+	padding: 2px 8px;
+	border-radius: 4px;
+	font-size: 11px;
+	font-weight: 600;
+	background: var(--background-secondary);
+	color: var(--text-faint);
+}
+
+/* ===== Agent 图形化卡片 ===== */
+.lumislate-agent-summary {
+	margin-bottom: 12px;
+}
+
+.lumislate-agent-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+	gap: 10px;
+	margin-bottom: 16px;
+}
+
+.lumislate-agent-card {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 12px 14px;
+	border-radius: 10px;
+	border: 1.5px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	transition: all 0.15s ease;
+	position: relative;
+	overflow: hidden;
+}
+
+.lumislate-agent-card:hover.available {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 2px 10px rgba(var(--interactive-accent-rgb), 0.1);
+	transform: translateY(-1px);
+}
+
+.lumislate-agent-card.selected {
+	border-color: var(--interactive-accent);
+	background: rgba(var(--interactive-accent-rgb), 0.06);
+	box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.lumislate-agent-card.unavailable {
+	background: var(--background-secondary);
+}
+
+.lumislate-agent-card-icon {
+	width: 36px;
+	height: 36px;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+}
+
+.lumislate-agent-card-icon svg {
+	width: 20px;
+	height: 20px;
+}
+
+.lumislate-agent-card-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.lumislate-agent-card-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.lumislate-agent-card-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lumislate-agent-card-badge {
+	flex-shrink: 0;
+	padding: 1px 7px;
+	border-radius: 10px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.lumislate-agent-card-badge.ok {
+	background: rgba(31, 122, 58, 0.12);
+	color: var(--text-success);
+}
+
+.lumislate-agent-card-badge.missing {
+	background: rgba(156, 42, 37, 0.1);
+	color: var(--text-error);
+}
+
+.lumislate-agent-card-vendor {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.lumislate-agent-card-path {
+	font-size: 10px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace), monospace;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.lumislate-agent-card-selected {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	color: var(--interactive-accent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.lumislate-agent-card-selected svg {
+	width: 16px;
+	height: 16px;
+}
+
+/* ===== 设置面板状态提示 ===== */
+.lumislate-status-ok {
+	color: var(--text-success);
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.lumislate-status-warning {
+	color: var(--text-error);
+	font-size: 13px;
+}
+
+/* ===== Skill 确认弹窗 ===== */
+.lumislate-skill-confirm-header {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.lumislate-skill-confirm-icon {
+	width: 40px;
+	height: 40px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 10px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+	flex-shrink: 0;
+}
+
+.lumislate-skill-confirm-icon svg {
+	width: 22px;
+	height: 22px;
+}
+
+.lumislate-skill-confirm-name {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--text-normal);
+}
+
+.lumislate-skill-confirm-desc {
+	font-size: 13px;
+	color: var(--text-muted);
+	line-height: 1.6;
+	margin-bottom: 8px;
+}

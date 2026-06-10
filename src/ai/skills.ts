@@ -5,6 +5,7 @@
  */
 
 import type { LoadedSkill } from './skill_loader';
+import { BUILT_IN_SKILLS } from './skills_built_in';
 
 /** 工作模式 */
 export type Mode = 'custom' | 'design';
@@ -24,10 +25,10 @@ export const MODES: ModeInfo[] = [
 /** Skill 接口（与 LoadedSkill 兼容） */
 export interface Skill extends LoadedSkill {}
 
-/** 运行时填充的 Skill 列表（由 main.ts 在插件启动时加载） */
-export let SKILLS: Skill[] = [];
+/** Skill 列表：默认使用构建时打包的内置技能 */
+export let SKILLS: Skill[] = [...BUILT_IN_SKILLS];
 
-/** 替换运行时 Skill 列表（插件启动时调用一次） */
+/** 替换运行时 Skill 列表 */
 export function setSkills(skills: Skill[]) {
 	SKILLS = skills;
 }

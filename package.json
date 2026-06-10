@@ -4,8 +4,8 @@
   "description": "LumiSlate Obsidian Plugin",
   "main": "main.js",
   "scripts": {
-    "dev": "tsup --watch",
-    "build": "tsup && node -e \"require('fs').copyFileSync('src/ui/styles.css', 'dist/styles.css')\" && node -e \"require('fs').copyFileSync('manifest.json', 'dist/manifest.json')\" && node -e \"require('fs').cpSync('skills', 'dist/skills', {recursive: true, force: true})\" && node scripts/deploy.js"
+    "dev": "node scripts/bundle-skills.js && tsup --watch",
+    "build": "node scripts/bundle-skills.js && tsup && node -e \"require('fs').copyFileSync('src/ui/styles.css', 'dist/styles.css')\" && node -e \"require('fs').copyFileSync('manifest.json', 'dist/manifest.json')\" && node scripts/deploy.js"
   },
   "dependencies": {
     "interactjs": "^1.10.27",

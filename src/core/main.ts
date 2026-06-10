@@ -2,9 +2,8 @@ import { Plugin, ItemView, WorkspaceLeaf, MarkdownView, Notice, Modal, TextAreaC
 import { CacheManager } from '../utils/cache_manager';
 import { extractFrontmatter, extractFrontmatterValue, compileWithAI, previewHtml, extractHtml } from '../ai/ai_service';
 import { getAvailableAgents, detectAgent } from '../ai/local_agent';
-import { SKILLS, getSkillById, assemblePrompt, parseCustomDirectives, CUSTOM_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT, setSkills } from '../ai/skills';
+import { SKILLS, getSkillById, assemblePrompt, parseCustomDirectives, CUSTOM_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT } from '../ai/skills';
 import type { Mode, Skill } from '../ai/skills';
-import { loadSkillsFromDisk } from '../ai/skill_loader';
 import { LumiSlateSettingTab, DEFAULT_SETTINGS, DEFAULT_CSS_SYSTEM_PROMPT } from '../config/settings';
 import type { LumiSlateSettings } from '../config/settings';
 import { checkPreprocessedState, detectSpecialSyntax } from '../utils/preprocess';
@@ -3022,19 +3021,13 @@ export default class LumiSlatePlugin extends Plugin {
 		// 初始化缓存管理器
 		this.cacheManager = new CacheManager(this.app, this.manifest.dir);
 
-		// 从磁盘加载 skills（插件目录下的 skills/ 文件夹）
-		const skillsDir = `${this.manifest.dir}/skills`;
-		const loadedSkills = await loadSkillsFromDisk(this.app.vault, skillsDir);
-		if (loadedSkills.length > 0) {
-			setSkills(loadedSkills);
-			console.log(`[LumiSlate] 已加载 ${loadedSkills.length} 个 skill`);
-			// 验证 defaultSkill 是否有效，无效则回退到第一个 skill
-			if (!getSkillById(this.settings.defaultSkill)) {
-				this.settings.defaultSkill = loadedSkills[0].id;
-				await this.saveSettings();
-			}
-		} else {
-			console.warn('[LumiSlate] 未从磁盘加载到任何 skill，skills 列表为空');
+		// Skills 已由构建脚本打包进 main.js（见 src/ai/skills_built_in.ts）
+		// 如需增删改 skill，请直接修改 skills/ 目录下的 SKILL.md，然后运行 npm run build
+		console.log(`[LumiSlate] 内置 skills 已就绪，共 ${SKILLS.length} 个`);
+		// 验证 defaultSkill 是否有效，无效则回退到第一个 skill
+		if (!getSkillById(this.settings.defaultSkill) && SKILLS.length > 0) {
+			this.settings.defaultSkill = SKILLS[0].id;
+			await this.saveSettings();
 		}
 
 		// 注册自定义视图

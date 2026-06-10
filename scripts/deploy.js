@@ -48,17 +48,7 @@ for (const [src, dest] of filesToCopy) {
   console.log(`  ✅ ${dest} (${size} KB)`);
 }
 
-// 复制 skills 目录
-const skillsSrc = path.resolve('dist/skills');
-const skillsDest = path.join(targetDir, 'skills');
-if (fs.existsSync(skillsSrc)) {
-  copyDirSync(skillsSrc, skillsDest);
-  const skillCount = fs.readdirSync(skillsDest, { withFileTypes: true }).filter(e => e.isDirectory()).length;
-  console.log(`  ✅ skills/ (${skillCount} 个 skill)`);
-  copied++;
-} else {
-  console.warn('  ⚠️ dist/skills/ 不存在，跳过复制');
-}
+// Skills 已内联打包进 main.js，无需额外复制
 
 // 确保 css 目录存在
 const cssDir = path.join(targetDir, 'css');
