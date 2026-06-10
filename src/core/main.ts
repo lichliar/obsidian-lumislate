@@ -2618,6 +2618,11 @@ export class LumiSlateView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		// 先释放 iframe 内部资源（停止所有脚本、定时器、动画）
+		if (this.iframe) {
+			this.iframe.srcdoc = '';
+		}
+		// 清理所有引用，让 GC 回收
 		this.iframe = null;
 		this.toolbarEl = null;
 		this.toolbarActionsEl = null;
@@ -2626,6 +2631,15 @@ export class LumiSlateView extends ItemView {
 		this.statusBarEl = null;
 		this.statusFileEl = null;
 		this.statusAgentEl = null;
+		this.exportBtn = null;
+		this.settingsBtn = null;
+		this.customSizeSelect = null;
+		this.customCssBtn = null;
+		this.customCssNameEl = null;
+		this.customPreprocessBtn = null;
+		this.layoutBtn = null;
+		this.saveBtn = null;
+		this.clearCacheBtn = null;
 	}
 
 	// ============ 工具栏 ============
@@ -2997,6 +3011,7 @@ export default class LumiSlatePlugin extends Plugin {
 	private customRenderDebounceTimer: number | null = null;
 	private cursorSyncInterval: number | null = null;
 	private lastCursorSlideIndex = -1;
+	private reverseMappingHandler: ((event: MessageEvent) => void) | null = null;
 
 	async onload(): Promise<void> {
 		console.log('LumiSlate (流光石板) 插件已加载');
@@ -3179,6 +3194,11 @@ export default class LumiSlatePlugin extends Plugin {
 			this.cursorSyncInterval = null;
 		}
 		this.stopMetricsTimer();
+		// 断开 postMessage 监听器，防止插件卸载后仍接收 iframe 消息
+		if (this.reverseMappingHandler) {
+			window.removeEventListener('message', this.reverseMappingHandler);
+			this.reverseMappingHandler = null;
+		}
 		// 重置所有累积状态
 		this.aiAccumulated = '';
 		this.aiCancelled = false;
@@ -3362,6 +3382,9 @@ export default class LumiSlatePlugin extends Plugin {
 
 		// 解析 Vault 内图片路径为可访问 URL
 		const resolvedMarkdown = resolveImagePaths(markdown, this.app, notePath);
+
+		// 如果正在进行 AI 流式渲染，先取消它，防止旧流覆盖新内容
+		this.cancelAiRender();
 
 		await this.activateView();
 
@@ -4780,7 +4803,7 @@ ${contentPreview}
 	// ------------------- 逆向回写 -------------------
 
 	private setupReverseMapping(): void {
-		window.addEventListener('message', (event) => {
+		this.reverseMappingHandler = (event: MessageEvent) => {
 			if (event.data?.type === 'lumislate-text-change') {
 				const view = this.getLumiSlateView();
 				if (!view || event.source !== view.getIframeWindow()) return;
@@ -4823,7 +4846,8 @@ ${contentPreview}
 				}
 				return;
 			}
-		});
+		};
+		window.addEventListener('message', this.reverseMappingHandler);
 	}
 
 	/** 打开设置面板并切换到 AI 标签 */

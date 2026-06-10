@@ -1,6 +1,7 @@
 node_modules/
-dist/
 main.js
 *.map
 .DS_Store
 .env
+.codegraph/
+docs/
