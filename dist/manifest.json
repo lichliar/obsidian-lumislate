@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-lumislate",
+  "name": "LumiSlate",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Transform your Markdown into high-end dynamic HTML canvases with responsive layouts and drag-and-drop inverse mapping.",
+  "author": "Izzy",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}
