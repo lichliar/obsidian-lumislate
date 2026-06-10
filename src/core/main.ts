@@ -450,11 +450,12 @@ h6 { font-size: 0.875rem; font-weight: 600; margin: 0.75rem 0 0.5rem; color: rgb
   transition: background 0.15s ease;
 }
 .lumislate-editing {
-  outline: 2px dashed #60a5fa;
-  outline-offset: 2px;
-  border-radius: 4px;
-  background: rgba(96, 165, 250, 0.06);
+  outline: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   cursor: text;
+  caret-color: currentColor;
 }
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -510,8 +511,82 @@ function getSlideFixedSize(size: string): { width: number; height: number } {
 	return { width, height };
 }
 
+// ============================================================
+// 幻灯片版式系统 — 每页独立 frontmatter + layout 模板
+// ============================================================
+
+/** 已知的局部 frontmatter key，用于判断 chunk 是否为 frontmatter */
+const KNOWN_SLIDE_FM_KEYS = new Set([
+	'layout', 'class', 'backgroundcolor', 'backgroundimage', 'backgroundsize',
+	'backgroundposition', 'backgroundrepeat', 'color', 'header', 'footer',
+	'theme', 'paginate', 'size', 'headingdivider', 'math', 'lang', 'style',
+]);
+
+/** 检测一段文本是否"看起来像 frontmatter"（所有非空行都是 key: value 且包含已知 key） */
+function looksLikeFrontmatter(text: string): boolean {
+	const lines = text.split('\n').filter((l) => l.trim() !== '');
+	if (lines.length === 0) return false;
+	const allKeyValue = lines.every((l) => l.match(/^[a-zA-Z_]\w*:\s*.+$/));
+	if (!allKeyValue) return false;
+	return lines.some((l) => {
+		const key = l.match(/^([a-zA-Z_]\w*):/)?.[1].toLowerCase();
+		return key && KNOWN_SLIDE_FM_KEYS.has(key);
+	});
+}
+
+/** 从单页 frontmatter 中提取字段值（不区分大小写 key） */
+function extractSlideFmValue(frontmatter: string, key: string): string {
+	const regex = new RegExp(`^${key}:\\s*(.*)$`, 'im');
+	const match = frontmatter.match(regex);
+	if (!match) return '';
+	return match[1].trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * 智能切分 body 为 slide 数组，识别每页独立的 frontmatter。
+ * 原理：按 --- 切分后，对每个 chunk 判断是否是 frontmatter（key: value 格式），
+ * 如果是则暂存，与下一个 content chunk 配对。
+ */
+function parseSlides(body: string): Array<{ frontmatter: string; content: string }> {
+	const chunks = body.split(/^---\s*$/m).map((s) => s.trim()).filter((s) => s.length > 0);
+	const slides: Array<{ frontmatter: string; content: string }> = [];
+	let pendingFm = '';
+
+	for (const chunk of chunks) {
+		if (looksLikeFrontmatter(chunk)) {
+			// 暂存 frontmatter，等待下一个 content chunk
+			pendingFm = chunk;
+		} else {
+			slides.push({ frontmatter: pendingFm, content: chunk });
+			pendingFm = '';
+		}
+	}
+
+	// 最后如果还有一个未配对的 frontmatter
+	if (pendingFm) {
+		slides.push({ frontmatter: pendingFm, content: '' });
+	}
+
+	return slides.filter((s) => s.content.trim() || s.frontmatter.trim());
+}
+
+/** 处理单页内容：支持 ::right:: 分栏，返回 HTML */
+function processSlideContent(content: string, layout: string): string {
+	const rightMarker = '\n::right::\n';
+
+	// two-cols 布局：按 ::right:: 分栏
+	if (layout === 'two-cols' && content.includes(rightMarker)) {
+		const parts = content.split(rightMarker);
+		const leftHtml = markdownToSimpleHTML(parts[0].trim());
+		const rightHtml = markdownToSimpleHTML(parts[1]?.trim() || '');
+		return `<div class="col-left">${leftHtml}</div><div class="col-right">${rightHtml}</div>`;
+	}
+
+	return markdownToSimpleHTML(content);
+}
+
 /** 长文模式：无分页符时的连续滚动页面 */
-function buildLongFormPage(body: string, options: { bgColor: string; textColor: string; customCss?: string }): string {
+function buildLongFormPage(body: string, options: { bgColor: string; textColor: string; customCss?: string; baseFontSize?: number; fontFamily?: string }): string {
 	const bodyHtml = markdownToSimpleHTML(body);
 	return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -521,9 +596,10 @@ function buildLongFormPage(body: string, options: { bgColor: string; textColor: 
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
+  font-size: ${options.baseFontSize || 16}px;
   --ls-body-bg: ${options.bgColor};
   --ls-body-color: ${options.textColor};
-  --ls-font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ls-font-family: ${options.fontFamily || "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"};
   --ls-content-padding: 3rem 4rem;
   --ls-line-height: 1.75;
   --ls-h1-size: 2.5rem;
@@ -613,6 +689,8 @@ html, body { width: 100%; min-height: 100%; background: var(--ls-body-bg); color
 #longform-content .task-list-item input[type="checkbox"] { margin-top: 0.25rem; accent-color: #60a5fa; }
 #longform-content .math-block { background: rgba(0,0,0,0.15); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; font-family: 'KaTeX_Math', 'Times New Roman', serif; text-align: center; margin: 0.75rem 0; }
 ${options.customCss || ''}
+.lumislate-hover { background: rgba(96, 165, 250, 0.12); cursor: text; border-radius: 2px; transition: background 0.15s ease; }
+.lumislate-editing { outline: none; border: none; border-radius: 0; background: transparent; cursor: text; caret-color: currentColor; }
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -653,10 +731,16 @@ ${bodyHtml}
  * - 有分页符：固定比例 slide 模式，纵向滚动浏览
  * - 无分页符：长文模式，不设高度限制，宽度自适应
  */
-async function buildCustomFallbackPage(markdown: string, app: App, pluginDir: string): Promise<string> {
+async function buildCustomFallbackPage(
+	markdown: string,
+	app: App,
+	pluginDir: string,
+	getLayout: (slideIndex: number) => string,
+	settings?: { baseFontSize?: number; textColor?: string; fontFamily?: string },
+): Promise<string> {
 	const { frontmatter, body } = extractFrontmatter(markdown);
 	const bgColor = extractFrontmatterValue(frontmatter, 'backgroundcolor') || extractFrontmatterValue(frontmatter, 'backgroundColor') || '#0f172a';
-	const textColor = extractFrontmatterValue(frontmatter, 'color') || '#e2e8f0';
+	const textColor = extractFrontmatterValue(frontmatter, 'color') || settings?.textColor || '#e2e8f0';
 	const paginate = extractFrontmatterValue(frontmatter, 'paginate');
 	const showPaginate = paginate === 'true';
 	const size = extractFrontmatterValue(frontmatter, 'size') || '16:9';
@@ -674,22 +758,38 @@ async function buildCustomFallbackPage(markdown: string, app: App, pluginDir: st
 
 	// 无分页符 → 长文模式
 	if (!hasDividers) {
-		return buildLongFormPage(body, { bgColor, textColor, customCss });
+		return buildLongFormPage(body, { bgColor, textColor, customCss, baseFontSize: settings?.baseFontSize, fontFamily: settings?.fontFamily });
 	}
 
-	// 有分页符 → 幻灯片模式
-	const slideTexts = body.split(/^---\s*$/m).map((s) => s.trim()).filter((s) => s.length > 0);
-	if (slideTexts.length === 0) {
-		slideTexts.push(body.trim() || '(空幻灯片)');
+	// 有分页符 → 幻灯片模式（智能切分，识别每页独立 frontmatter）
+	const slides = parseSlides(body);
+	if (slides.length === 0) {
+		slides.push({ frontmatter: '', content: body.trim() || '(空幻灯片)' });
 	}
 
 	const { width: fixedWidth, height: fixedHeight } = getSlideFixedSize(size);
 
-	const slidesHtml = slideTexts
-		.map((text, idx) => {
-			const bodyHtml = markdownToSimpleHTML(text);
-			const pageNum = showPaginate ? `<div class="slide-paginate">${idx + 1} / ${slideTexts.length}</div>` : '';
-			return `<div class="slide-wrapper"><section class="slide" data-index="${idx}">${bodyHtml}${pageNum}</section></div>`;
+	const slidesHtml = slides
+		.map((slide, idx) => {
+			const globalLayout = extractFrontmatterValue(frontmatter, 'layout') || 'default';
+			const slideLayout = getLayout(idx) || globalLayout;
+			const slideClass = extractSlideFmValue(slide.frontmatter, 'class') || '';
+			const slideBgColor = extractSlideFmValue(slide.frontmatter, 'backgroundColor')
+				|| extractSlideFmValue(slide.frontmatter, 'backgroundcolor') || '';
+
+			const bodyHtml = processSlideContent(slide.content, slideLayout);
+			const pageNum = showPaginate ? `<div class="slide-paginate">${idx + 1} / ${slides.length}</div>` : '';
+
+			const attrs: string[] = [
+				`class="slide ${slideClass}"`,
+				`data-index="${idx}"`,
+				`data-layout="${slideLayout}"`,
+			];
+			if (slideBgColor) {
+				attrs.push(`style="background: ${slideBgColor};"`);
+			}
+
+			return `<div class="slide-wrapper"><section ${attrs.join(' ')}>${bodyHtml}${pageNum}</section></div>`;
 		})
 		.join('\n');
 
@@ -701,9 +801,10 @@ async function buildCustomFallbackPage(markdown: string, app: App, pluginDir: st
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
+  font-size: ${settings?.baseFontSize || 16}px;
   --ls-body-bg: ${bgColor};
   --ls-body-color: ${textColor};
-  --ls-font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ls-font-family: ${settings?.fontFamily || "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"};
   --ls-deck-gap: 1rem;
   --ls-deck-padding: 1rem;
   --ls-slide-padding: 3rem 4rem;
@@ -806,7 +907,32 @@ section .task-list-item { display: flex; align-items: flex-start; gap: 0.4rem; m
 section .task-list-item input[type="checkbox"] { margin-top: 0.15rem; accent-color: #60a5fa; }
 section .math-block { background: rgba(0,0,0,0.15); padding: 0.5rem 0.75rem; border-radius: 6px; overflow-x: auto; font-family: 'KaTeX_Math', 'Times New Roman', serif; text-align: center; margin: 0.5rem 0; font-size: 0.85rem; }
 .slide-paginate { position: absolute; bottom: var(--ls-paginate-bottom); right: var(--ls-paginate-right); font-size: var(--ls-paginate-font-size); opacity: var(--ls-paginate-opacity); }
+/* ===== 版式模板系统（Layout System）===== */
+section[data-layout="cover"] { text-align: center; justify-content: center; align-items: center; }
+section[data-layout="cover"] h1 { margin-bottom: 0.75rem; }
+section[data-layout="cover"] h2 { opacity: 0.75; font-weight: 400; margin-top: 0; }
+section[data-layout="cover"] p { opacity: 0.7; }
+
+section[data-layout="center"] { text-align: center; justify-content: center; align-items: center; }
+section[data-layout="center"] * { text-align: center; }
+
+section[data-layout="two-cols"] { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start; align-content: center; }
+section[data-layout="two-cols"] .col-left, section[data-layout="two-cols"] .col-right { overflow: hidden; min-width: 0; }
+section[data-layout="two-cols"] h1, section[data-layout="two-cols"] h2 { grid-column: 1 / -1; margin-bottom: 0.5rem; }
+
+section[data-layout="statement"] { text-align: center; justify-content: center; align-items: center; }
+section[data-layout="statement"] blockquote { border: none; font-style: italic; padding: 0; margin: 0; }
+section[data-layout="statement"] blockquote::before { content: '\\201C'; font-size: 3rem; opacity: 0.3; line-height: 1; display: block; margin-bottom: 0.5rem; }
+section[data-layout="statement"] p { opacity: 0.6; margin-top: 1.5rem; }
+
+section[data-layout="section"] { text-align: center; justify-content: center; align-items: center; }
+section[data-layout="section"] h1 { letter-spacing: -0.02em; }
+section[data-layout="section"] h1::after { content: ''; display: block; width: 80px; height: 4px; background: linear-gradient(90deg, #6366f1, #a78bfa); margin: 1.5rem auto 0; border-radius: 2px; }
+section[data-layout="section"] h2 { opacity: 0.6; font-weight: 400; margin-top: 1rem; }
+section[data-layout="section"] *:not(h1):not(h2) { display: none; }
 ${customCss}
+.lumislate-hover { background: rgba(96, 165, 250, 0.12); cursor: text; border-radius: 2px; transition: background 0.15s ease; }
+.lumislate-editing { outline: none; border: none; border-radius: 0; background: transparent; cursor: text; caret-color: currentColor; }
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -1745,6 +1871,20 @@ function getReverseMappingScript(): string {
 (function() {
   'use strict';
 
+  // 注入 I 型闪烁光标样式
+  var cursorStyle = document.createElement('style');
+  cursorStyle.textContent =
+    '.lumislate-cursor{' +
+    'display:inline-block;width:2px;height:1.1em;' +
+    'background-color:currentColor;vertical-align:text-bottom;margin-left:1px;' +
+    'animation:lumislate-blink 1.1s step-end infinite' +
+    '}' +
+    '@keyframes lumislate-blink{' +
+    '0%,100%{opacity:1}' +
+    '50%{opacity:0}' +
+    '}';
+  document.head.appendChild(cursorStyle);
+
   var EDITABLE_TAGS = ['P','H1','H2','H3','H4','H5','H6','LI','SPAN','STRONG','EM','TD','TH','A','BLOCKQUOTE'];
   var HOVER_CLASS = 'lumislate-hover';
   var EDIT_CLASS  = 'lumislate-editing';
@@ -1898,6 +2038,76 @@ function getReverseMappingScript(): string {
     } else if (e.key === 'Escape') {
       e.preventDefault();
       cancelEdit();
+    }
+  });
+
+  // Slide tracking — 点击 slide 通知父窗口选中该页，同时接收父窗口滚动指令
+  var slides = document.querySelectorAll('section.slide, section[data-layout]');
+  var selectedIdx = 0;
+
+  function updateSelection(idx) {
+    selectedIdx = idx;
+    if (slides.length === 0) return;
+    slides.forEach(function(s, i) {
+      s.style.outline = (i === idx) ? '2px solid #3b82f6' : 'none';
+      s.style.outlineOffset = (i === idx) ? '-2px' : '0';
+    });
+  }
+
+  function scrollToSlide(idx) {
+    if (slides.length === 0) return;
+    var target = slides[idx];
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    updateSelection(idx);
+    placeCursorInSlide(target);
+  }
+
+  function placeCursorInSlide(slide) {
+    // 移除之前的光标
+    var oldCursor = document.querySelector('.lumislate-cursor');
+    if (oldCursor) oldCursor.remove();
+
+    // 找到 slide 内第一个有文本内容的可编辑元素
+    var editableTags = ['P','H1','H2','H3','H4','H5','H6','LI','SPAN','STRONG','EM','TD','TH','BLOCKQUOTE'];
+    var elements = slide.querySelectorAll(editableTags.join(','));
+    for (var i = 0; i < elements.length; i++) {
+      var el = elements[i];
+      if (el.textContent.trim()) {
+        var cursor = document.createElement('span');
+        cursor.className = 'lumislate-cursor';
+        cursor.setAttribute('aria-hidden', 'true');
+        el.appendChild(cursor);
+        return;
+      }
+    }
+  }
+
+  if (slides.length > 0) {
+    slides.forEach(function(s, i) {
+      s.style.cursor = 'pointer';
+      s.addEventListener('click', function(e) {
+        // 如果点击的是可编辑元素或交互元素，不触发选页
+        var tag = e.target.tagName;
+        if (['INPUT','TEXTAREA','SELECT','A','BUTTON'].indexOf(tag) !== -1) return;
+        updateSelection(i);
+        window.parent.postMessage({
+          type: 'lumislate-slide-click',
+          index: i
+        }, '*');
+      });
+    });
+    // 默认选中第一页
+    updateSelection(0);
+  }
+
+  // 接收父窗口滚动指令
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'lumislate-scroll-to-slide') {
+      var idx = event.data.index;
+      if (typeof idx === 'number' && idx >= 0) {
+        scrollToSlide(idx);
+      }
     }
   });
 })();
@@ -2260,6 +2470,16 @@ export interface RunStats {
 	skillName?: string;
 }
 
+/** 自定义模式可用的幻灯片版式 */
+export const SLIDE_LAYOUTS = [
+	{ id: 'default', name: '标准页', icon: 'file-text' },
+	{ id: 'cover', name: '封面', icon: 'image' },
+	{ id: 'center', name: '居中', icon: 'align-center' },
+	{ id: 'two-cols', name: '双栏', icon: 'columns-2' },
+	{ id: 'statement', name: '金句', icon: 'quote' },
+	{ id: 'section', name: '章节', icon: 'heading-1' },
+];
+
 export class LumiSlateView extends ItemView {
 	private iframe: HTMLIFrameElement | null = null;
 	private toolbarEl: HTMLElement | null = null;
@@ -2274,6 +2494,8 @@ export class LumiSlateView extends ItemView {
 	private customCssBtn: HTMLButtonElement | null = null;
 	private customCssNameEl: HTMLElement | null = null;
 	private customPreprocessBtn: HTMLButtonElement | null = null;
+	private layoutBtn: HTMLButtonElement | null = null;
+	private saveBtn: HTMLButtonElement | null = null;
 	private clearCacheBtn: HTMLButtonElement | null = null;
 
 	// 工具栏固定元素
@@ -2293,6 +2515,7 @@ export class LumiSlateView extends ItemView {
 	private _hasAccumulated = false;
 	private _currentFileName: string | null = null;
 	private _selectedSkillId: string = SKILLS[0]?.id || '';
+	private _currentSlideIndex: number = 0;
 
 	onModeChange: ((mode: Mode) => void) | null = null;
 	onSkillChange: ((skillId: string) => void) | null = null;
@@ -2304,6 +2527,8 @@ export class LumiSlateView extends ItemView {
 	onCustomCss: (() => void) | null = null;
 	onCustomPreprocessLongform: (() => void) | null = null;
 	onCustomPreprocessSlide: (() => void) | null = null;
+	onSlideLayoutChange: ((layout: string) => void) | null = null;
+	onSaveHtml: (() => void) | null = null;
 	onGoHome: (() => void) | null = null;
 	onClearCache: (() => void) | null = null;
 
@@ -2467,6 +2692,18 @@ export class LumiSlateView extends ItemView {
 			this.onCustomSizeChange?.(this.customSizeSelect!.value);
 		});
 
+		// 版式选择按钮（点击弹出菜单）
+		this.layoutBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
+		setIcon(this.layoutBtn.createSpan(), 'layout');
+		this.layoutBtn.appendText(' 版式');
+		this.layoutBtn.addEventListener('click', (evt) => this.showLayoutMenu(evt));
+
+		// 保存 HTML 按钮
+		this.saveBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
+		setIcon(this.saveBtn.createSpan(), 'save');
+		this.saveBtn.appendText(' 保存');
+		this.saveBtn.addEventListener('click', () => this.onSaveHtml?.());
+
 		this.customCssBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
 		setIcon(this.customCssBtn.createSpan(), 'palette');
 		this.customCssBtn.appendText(' CSS');
@@ -2528,12 +2765,46 @@ export class LumiSlateView extends ItemView {
 		return this.currentMode;
 	}
 
+	isHomePage(): boolean {
+		return this._isHomePage;
+	}
+
 	setSelectedSkill(skillId: string): void {
 		this._selectedSkillId = skillId;
 	}
 
 	getSelectedSkill(): string {
 		return this._selectedSkillId || SKILLS[0]?.id || '';
+	}
+
+	setCurrentSlideIndex(index: number): void {
+		this._currentSlideIndex = index;
+	}
+
+	getCurrentSlideIndex(): number {
+		return this._currentSlideIndex;
+	}
+
+	/** 同步版式按钮的显示文本 */
+	setLayoutSelectValue(value: string): void {
+		if (!this.layoutBtn) return;
+		const layout = SLIDE_LAYOUTS.find(l => l.id === value);
+		this.layoutBtn.empty();
+		setIcon(this.layoutBtn.createSpan(), layout?.icon || 'layout');
+		this.layoutBtn.appendText(` ${layout?.name || '版式'}`);
+	}
+
+	/** 显示版式选择菜单 */
+	showLayoutMenu(evt: MouseEvent): void {
+		const menu = new Menu();
+		for (const layout of SLIDE_LAYOUTS) {
+			menu.addItem((item) => {
+				item.setTitle(layout.name)
+					.setIcon(layout.icon)
+					.onClick(() => this.onSlideLayoutChange?.(layout.id));
+			});
+		}
+		menu.showAtMouseEvent(evt);
 	}
 
 	/** 更新 Skill 选择按钮的显示文本和图标 */
@@ -2586,16 +2857,24 @@ export class LumiSlateView extends ItemView {
 			if (this.customPreprocessBtn) this.customPreprocessBtn.disabled = true;
 			if (this.exportBtn) this.exportBtn.disabled = true;
 			if (this.customSizeSelect) this.customSizeSelect.disabled = true;
+			if (this.layoutBtn) this.layoutBtn.disabled = true;
 			if (this.customCssBtn) this.customCssBtn.disabled = true;
+			if (this.saveBtn) this.saveBtn.disabled = true;
 			if (this.settingsBtn) this.settingsBtn.disabled = true;
 			if (this.clearCacheBtn) this.clearCacheBtn.disabled = true;
 		} else {
 			// 空闲：启用操作按钮
 			if (this.customPreprocessBtn) this.customPreprocessBtn.disabled = false;
-			if (this.exportBtn) this.exportBtn.disabled = !this._hasCache;
-			// 尺寸选择框：有分页符时才可用
+			// 自定义模式下导出始终可用（实时渲染，iframe 始终有内容）
+			// Design 模式下需要等有缓存或累积输出
+			if (this.exportBtn) {
+				this.exportBtn.disabled = this.currentMode === 'design' ? !this._hasCache && !this._hasAccumulated : false;
+			}
+			// 尺寸选择框 + 版式按钮：有分页符时才可用
 			if (this.customSizeSelect) this.customSizeSelect.disabled = !this._hasDividers;
+			if (this.layoutBtn) this.layoutBtn.disabled = !this._hasDividers;
 			if (this.customCssBtn) this.customCssBtn.disabled = false;
+			if (this.saveBtn) this.saveBtn.disabled = false;
 			if (this.settingsBtn) this.settingsBtn.disabled = false;
 			if (this.clearCacheBtn) this.clearCacheBtn.disabled = !(this._hasCache || this._hasAccumulated);
 		}
@@ -2693,6 +2972,14 @@ export class LumiSlateView extends ItemView {
 	getIframe(): HTMLIFrameElement | null {
 		return this.iframe;
 	}
+
+	/** 滚动到指定幻灯片（通过 postMessage 通知 iframe） */
+	scrollToSlide(index: number): void {
+		const win = this.getIframeWindow();
+		if (win) {
+			win.postMessage({ type: 'lumislate-scroll-to-slide', index }, '*');
+		}
+	}
 }
 
 // ============================================================
@@ -2708,6 +2995,8 @@ export default class LumiSlatePlugin extends Plugin {
 	private currentRunStats: RunStats | null = null;
 	private metricsTimer: number | null = null;
 	private customRenderDebounceTimer: number | null = null;
+	private cursorSyncInterval: number | null = null;
+	private lastCursorSlideIndex = -1;
 
 	async onload(): Promise<void> {
 		console.log('LumiSlate (流光石板) 插件已加载');
@@ -2778,8 +3067,10 @@ export default class LumiSlatePlugin extends Plugin {
 				view.onCustomPreprocessLongform = () => this.preprocessCustomCurrentNote('longform');
 				view.onCustomPreprocessSlide = () => this.preprocessCustomCurrentNote('slide');
 				view.onExport = () => this.showExportMenu();
+					view.onSaveHtml = () => this.saveCustomHtml();
 				view.onCustomSizeChange = (size) => this.handleCustomSizeChange(size);
 				view.onCustomCss = () => this.showCustomCssModal();
+				view.onSlideLayoutChange = (layout) => this.applySlideLayout(layout);
 				view.onGoHome = () => view.resetToWelcome();
 				view.onClearCache = () => this.handleClearLayout();
 				// 恢复上次选中的模式和 skill
@@ -2834,6 +3125,13 @@ export default class LumiSlatePlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', () => {
 				this.refreshViewContext().catch(() => {});
+				// 切换文件时重置光标同步状态，确保新文件的光标位置能被正确追踪
+				this.lastCursorSlideIndex = -1;
+				// 自定义模式下：切换文件时自动重新渲染
+				const view = this.getLumiSlateView();
+				if (view && view.getMode() === 'custom' && !view.isHomePage()) {
+					this.renderCurrentNote().catch(() => {});
+				}
 			})
 		);
 
@@ -2856,14 +3154,36 @@ export default class LumiSlatePlugin extends Plugin {
 		);
 
 		this.setupReverseMapping();
+
+		// 启动编辑器光标位置同步轮询（自定义模式下，左侧光标变化时右侧自动跟随）
+		this.cursorSyncInterval = window.setInterval(() => {
+			const slideIndex = this.getSlideIndexAtCursor();
+			if (slideIndex !== this.lastCursorSlideIndex) {
+				this.lastCursorSlideIndex = slideIndex;
+				this.syncCursorToSlide();
+			}
+		}, 200);
 	}
 
 	onunload(): void {
 		console.log('LumiSlate 插件已卸载');
+		// 彻底停止所有 AI 渲染和后台活动
 		this.cancelAiRender();
+		// 清理所有定时器
 		if (this.customRenderDebounceTimer) {
 			clearTimeout(this.customRenderDebounceTimer);
+			this.customRenderDebounceTimer = null;
 		}
+		if (this.cursorSyncInterval) {
+			clearInterval(this.cursorSyncInterval);
+			this.cursorSyncInterval = null;
+		}
+		this.stopMetricsTimer();
+		// 重置所有累积状态
+		this.aiAccumulated = '';
+		this.aiCancelled = false;
+		this.currentRunStats = null;
+		// 关闭所有视图
 		this.app.workspace.detachLeavesOfType(LUMISLATE_VIEW_TYPE);
 	}
 
@@ -3053,11 +3373,67 @@ export default class LumiSlatePlugin extends Plugin {
 
 		const mode = view.getMode();
 
-		// 自定义模式：实时渲染，不缓存
+		// 自定义模式：优先检查已保存的 HTML，再实时渲染
 		if (mode === "custom") {
-			const html = await buildCustomFallbackPage(resolvedMarkdown, this.app, this.manifest.dir);
+			// 渲染前记录当前光标所在的幻灯片索引（用于渲染后恢复位置）
+			const targetSlideIndex = this.getSlideIndexAtCursor();
+
+			const { savedHtmlPath, hasConflict } = await this.checkSavedHtmlConflict(notePath);
+
+			if (savedHtmlPath && !hasConflict) {
+				// 有保存的 HTML 且无冲突，直接加载
+				const savedHtml = await this.app.vault.adapter.read(savedHtmlPath).catch(() => null);
+				if (savedHtml) {
+					view.renderCanvas(savedHtml);
+					await this.refreshViewContext();
+					new Notice('已从保存的 HTML 恢复');
+					return;
+				}
+			}
+
+			if (savedHtmlPath && hasConflict) {
+				// 有冲突，弹窗询问
+				const shouldReRender = confirm(
+					`检测到 Markdown 文件已更新（${activeFile.basename}.md）。\n\n` +
+					`已保存的 HTML 可能已过期，是否重新渲染？\n\n` +
+					`【确定】重新渲染 HTML（基于最新 Markdown）\n` +
+					`【取消】仍加载已保存的 HTML`
+				);
+				if (!shouldReRender) {
+					const savedHtml = await this.app.vault.adapter.read(savedHtmlPath).catch(() => null);
+					if (savedHtml) {
+						view.renderCanvas(savedHtml);
+						await this.refreshViewContext();
+						return;
+					}
+				}
+				// 用户选择重新渲染，继续执行下面的渲染逻辑
+			}
+
+			const html = await buildCustomFallbackPage(
+				resolvedMarkdown,
+				this.app,
+				this.manifest.dir,
+				(idx) => this.getSlideLayout(notePath, idx),
+				{
+					baseFontSize: this.settings.customBaseFontSize,
+					textColor: this.settings.customTextColor,
+					fontFamily: this.settings.customFontFamily,
+				},
+			);
 			const injected = injectInteractionScripts(html);
 			view.renderCanvas(injected);
+
+			// 渲染完成后恢复幻灯片位置（延迟确保 iframe 已加载）
+			if (targetSlideIndex > 0) {
+				window.setTimeout(() => {
+					view.scrollToSlide(targetSlideIndex);
+					view.setCurrentSlideIndex(targetSlideIndex);
+					const layout = this.getSlideLayout(notePath, targetSlideIndex);
+					view.setLayoutSelectValue(layout);
+				}, 80);
+			}
+
 			await this.refreshViewContext();
 			return;
 		}
@@ -3149,6 +3525,16 @@ export default class LumiSlatePlugin extends Plugin {
 					if (directives && directives !== '(无额外指令)') {
 						extraPrefix = `【用户指定的自定义模式指令】\n${directives}`;
 					}
+				}
+				// 注入版式映射（从插件设置中读取，不污染 Markdown）
+				const layoutMap = this.settings.slideLayouts[renderNotePath];
+				if (layoutMap && Object.keys(layoutMap).length > 0) {
+					const layoutLines = Object.entries(layoutMap)
+						.sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+						.map(([idx, layout]) => `  第 ${parseInt(idx) + 1} 页 → layout: ${layout}`)
+						.join('\n');
+					const layoutPrefix = `【每页版式映射 — 由用户在 LumiSlate 中指定】\n${layoutLines}\n\n请严格按照上述映射为每一页 <section> 设置对应的 layout 属性。未指定的页使用默认版式（default）。`;
+					extraPrefix = extraPrefix ? `${extraPrefix}\n\n${layoutPrefix}` : layoutPrefix;
 				}
 				if (syntaxPrefix) {
 					extraPrefix = extraPrefix ? `${extraPrefix}\n\n${syntaxPrefix}` : syntaxPrefix;
@@ -3576,6 +3962,97 @@ export default class LumiSlatePlugin extends Plugin {
 		await saveHtmlToVault(this.app, html, targetPath);
 	}
 
+	/** 获取自定义模式下保存的 HTML 文件路径 */
+	private getCustomHtmlSavePath(mdPath: string): string {
+		const folder = this.settings.htmlDefaultSaveFolder;
+		const basename = mdPath.split('/').pop()?.replace(/\.md$/i, '') || 'untitled';
+		const filename = `${basename}.html`;
+		if (folder) {
+			return `${folder}/${filename}`;
+		}
+		// 使用 markdown 所在目录
+		const parentDir = mdPath.split('/').slice(0, -1).join('/');
+		return parentDir ? `${parentDir}/${filename}` : filename;
+	}
+
+	/** 保存自定义模式当前 HTML 到 Vault */
+	async saveCustomHtml(): Promise<void> {
+		const view = this.getLumiSlateView();
+		if (!view) {
+			new Notice('画布视图未就绪');
+			return;
+		}
+
+		const iframe = view.getIframe();
+		if (!iframe || !iframe.srcdoc) {
+			new Notice('画布为空，无法保存');
+			return;
+		}
+
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile || activeFile.extension !== 'md') {
+			new Notice('请先打开一个 Markdown 笔记');
+			return;
+		}
+
+		const targetPath = this.getCustomHtmlSavePath(activeFile.path);
+		let html = iframe.srcdoc;
+
+		// 注入 markdown 文件 mtime 标记，用于后续冲突检测
+		const mtime = activeFile.stat?.mtime || Date.now();
+		const metaTag = `<meta name="lumislate-source-mtime" content="${mtime}">`;
+		if (html.includes('<head>')) {
+			html = html.replace('<head>', `<head>\n${metaTag}`);
+		} else {
+			html = html + '\n' + metaTag;
+		}
+
+		try {
+			// 确保目录存在
+			const dir = targetPath.split('/').slice(0, -1).join('/');
+			if (dir && !(await this.app.vault.adapter.exists(dir))) {
+				await this.app.vault.adapter.mkdir(dir);
+			}
+
+			await this.app.vault.adapter.write(targetPath, html);
+			new Notice(`HTML 已保存: ${targetPath}`);
+		} catch (err) {
+			const msg = String((err as Error)?.message ?? err);
+			new Notice(`保存失败: ${msg}`);
+		}
+	}
+
+	/** 检查是否存在保存的 HTML 及其与当前 Markdown 的冲突状态 */
+	private async checkSavedHtmlConflict(mdPath: string): Promise<{ savedHtmlPath: string | null; hasConflict: boolean }> {
+		const savedPath = this.getCustomHtmlSavePath(mdPath);
+		const exists = await this.app.vault.adapter.exists(savedPath);
+		if (!exists) {
+			return { savedHtmlPath: null, hasConflict: false };
+		}
+
+		// 读取保存的 HTML，提取其中嵌入的原始 markdown 时间戳（用于冲突检测）
+		// 我们在保存时会在 HTML 中注入一个 meta 标记来记录 markdown 文件的 mtime
+		const html = await this.app.vault.adapter.read(savedPath).catch(() => null);
+		if (!html) {
+			return { savedHtmlPath: savedPath, hasConflict: false };
+		}
+
+		// 提取保存时记录的 markdown mtime
+		const metaMatch = html.match(/<meta name="lumislate-source-mtime" content="(\d+)">/);
+		const savedMtime = metaMatch ? parseInt(metaMatch[1], 10) : 0;
+
+		// 获取当前 markdown 文件的 mtime
+		const file = this.app.vault.getAbstractFileByPath(mdPath);
+		let currentMtime = 0;
+		if (file instanceof TFile && file.stat) {
+			currentMtime = file.stat.mtime;
+		}
+
+		// 如果当前 mtime 大于保存时的 mtime，说明 markdown 已更新
+		const hasConflict = currentMtime > savedMtime;
+		return { savedHtmlPath: savedPath, hasConflict };
+	}
+
 	// ------------------- 自定义模式专用工具 -------------------
 
 	/** 处理自定义模式尺寸比例切换 */
@@ -3588,6 +4065,38 @@ export default class LumiSlatePlugin extends Plugin {
 		await this.updateCustomFrontmatterField('size', size);
 		// 自动重新渲染使新比例生效
 		await this.renderCurrentNote();
+	}
+
+	/**
+	 * 应用版式到当前可见的 slide
+	 * 版式信息存储在插件设置中（slideLayouts），不修改 Markdown 源码。
+	 */
+	async applySlideLayout(layout: string): Promise<void> {
+		const view = this.getLumiSlateView();
+		const slideIndex = view?.getCurrentSlideIndex() ?? 0;
+
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile || activeFile.extension !== 'md') {
+			new Notice('未找到当前 Markdown 文件');
+			return;
+		}
+
+		// 更新设置中的版式映射
+		if (!this.settings.slideLayouts[activeFile.path]) {
+			this.settings.slideLayouts[activeFile.path] = {};
+		}
+		this.settings.slideLayouts[activeFile.path][slideIndex] = layout;
+		await this.saveSettings();
+
+		new Notice(`已应用版式: ${SLIDE_LAYOUTS.find(l => l.id === layout)?.name || layout} (第 ${slideIndex + 1} 页)`);
+
+		// 触发重新渲染使新版式生效
+		await this.renderCurrentNote();
+	}
+
+	/** 获取指定文件某页的版式（从设置中读取） */
+	getSlideLayout(filePath: string, slideIndex: number): string {
+		return this.settings.slideLayouts[filePath]?.[slideIndex] || 'default';
 	}
 
 	/** 从设置中读取自定义 CSS 系统提示词 */
@@ -4224,6 +4733,50 @@ ${contentPreview}
 		}
 	}
 
+	// ------------------- 编辑器 ↔ 幻灯片位置同步 -------------------
+
+	/** 根据编辑器光标位置计算当前所在的幻灯片索引（仅自定义模式有分页符时有效） */
+	private getSlideIndexAtCursor(): number {
+		const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!mdView) return 0;
+
+		const editor = mdView.editor;
+		const cursor = editor.getCursor();
+		const content = editor.getValue();
+
+		// 提取 frontmatter，获取 body 起始偏移量
+		const { frontmatter, body } = extractFrontmatter(content);
+		const frontmatterEndOffset = frontmatter
+			? content.indexOf(body)
+				: 0;
+
+		// 获取光标在全文中的偏移量
+		const cursorOffset = editor.posToOffset(cursor);
+
+		// 只统计 body 区域中的分页符数量（光标前的 --- 数量 = 幻灯片索引）
+		const bodyPrefix = content.slice(frontmatterEndOffset, cursorOffset);
+		const dividerMatches = bodyPrefix.match(/^---\s*$/gm);
+
+		return dividerMatches ? dividerMatches.length : 0;
+	}
+
+	/** 将右侧预览滚动到与左侧编辑器光标对应的幻灯片 */
+	private syncCursorToSlide(): void {
+		const view = this.getLumiSlateView();
+		if (!view || view.getMode() !== 'custom') return;
+		const slideIndex = this.getSlideIndexAtCursor();
+		if (slideIndex >= 0) {
+			view.scrollToSlide(slideIndex);
+			view.setCurrentSlideIndex(slideIndex);
+			// 同步版式按钮显示
+			const activeFile = this.app.workspace.getActiveFile();
+			if (activeFile) {
+				const layout = this.getSlideLayout(activeFile.path, slideIndex);
+				view.setLayoutSelectValue(layout);
+			}
+		}
+	}
+
 	// ------------------- 逆向回写 -------------------
 
 	private setupReverseMapping(): void {
@@ -4254,6 +4807,20 @@ ${contentPreview}
 
 			if (event.data?.type === 'lumislate-open-settings') {
 				this.openSettingsTab();
+				return;
+			}
+
+			if (event.data?.type === 'lumislate-slide-click') {
+				const view = this.getLumiSlateView();
+				if (!view || event.source !== view.getIframeWindow()) return;
+				const idx = event.data.index as number;
+				view.setCurrentSlideIndex(idx);
+				// 同步下拉框显示当前页版式
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile) {
+					const layout = this.getSlideLayout(activeFile.path, idx);
+					view.setLayoutSelectValue(layout);
+				}
 				return;
 			}
 		});

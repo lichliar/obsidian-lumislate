@@ -90,6 +90,14 @@ export const CUSTOM_BODY = `【模板: 自定义模式 幻灯片 / Presentation 
    - headingDivider: 如设为 2, 表示每个 ## 标题自动开启新幻灯片
    - style: 额外原始 CSS, 直接注入 <style>
    局部指令(以 _ 前缀, 如 _backgroundColor: red): 只作用于**紧跟其后的那一页**。
+   - layout: 版式模板 — 控制当前页的布局结构。可选值:
+     · default — 标准页（标题+内容自上而下，默认）
+     · cover — 封面页（大标题居中放大，适合首屏）
+     · center — 居中页（所有内容居中堆叠）
+     · two-cols — 双栏布局（左侧默认内容，右侧用 ::right:: 分隔）
+     · statement — 金句页（超大字号居中引用）
+     · section — 章节分隔页（仅保留大标题，极简）
+     用户通过每页前的 frontmatter 指定: ---\nlayout: cover\n---
 3. 幻灯片尺寸: 默认 16:9 (width: 1280px, height: 720px)。幻灯片容器使用固定比例, 在浏览器中居中显示, 保持比例缩放。
 4. 内容映射: 不要把多页内容塞进一页。每一页只放对应 \`---\` 区间内的内容。如果某页内容太长, 可以适当缩小字号或调整布局, 但不要拆分到其他页。
 5. 排版: 每页标题用 <h1> 或 <h2>, 正文用 <p> / <ul> / <ol> / <table> / <blockquote>。列表项要清晰, 不要拥挤。
@@ -135,6 +143,7 @@ export function parseCustomDirectives(frontmatter: string): string {
 					'math',
 					'lang',
 					'style',
+					'layout',
 				].includes(key)
 			) {
 				directives.push(`${key}: ${val}`);

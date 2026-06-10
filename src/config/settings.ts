@@ -24,6 +24,20 @@ export interface LumiSlateSettings {
 	preprocessLongformPrompt: string;
 	/** 幻灯片模式预处理系统提示词 */
 	preprocessSlidePrompt: string;
+	/**
+	 * Slide 版式映射表
+	 * key = 文件路径, value = { slideIndex: layoutId }
+	 * 版式信息存储在插件设置中，不污染 Markdown 源码
+	 */
+	slideLayouts: Record<string, Record<number, string>>;
+	/** 自定义模式基准字号（px），影响所有 rem 单位的标题与间距 */
+	customBaseFontSize: number;
+	/** 自定义模式文字颜色（HEX） */
+	customTextColor: string;
+	/** 自定义模式字体 */
+	customFontFamily: string;
+	/** HTML 默认保存地址（相对 Vault 根目录），留空则使用当前笔记所在目录 */
+	htmlDefaultSaveFolder: string;
 }
 
 /** 默认 CSS 系统提示词（用于 AI 辅助 CSS 编辑） */
@@ -150,6 +164,11 @@ export const DEFAULT_SETTINGS: LumiSlateSettings = {
 	cssSystemPrompt: DEFAULT_CSS_SYSTEM_PROMPT,
 	preprocessLongformPrompt: LONGFORM_PREPROCESS_PROMPT,
 	preprocessSlidePrompt: SLIDE_PREPROCESS_PROMPT,
+	slideLayouts: {},
+	customBaseFontSize: 16,
+	customTextColor: '#e2e8f0',
+	customFontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+	htmlDefaultSaveFolder: '',
 };
 
 // ============================================================
@@ -164,6 +183,9 @@ const I18N = {
 		defaultExportFolder: '默认导出目录',
 		defaultExportFolderDesc: '保存 HTML 到 Vault 时的默认文件夹路径（相对 Vault 根目录），留空则使用当前笔记所在目录',
 		defaultExportFolderPlaceholder: '例如: exports',
+		htmlDefaultSaveFolder: 'HTML 默认保存地址',
+		htmlDefaultSaveFolderDesc: '自定义模式下保存 HTML 的默认文件夹路径（相对 Vault 根目录），留空则使用当前笔记所在目录',
+		htmlDefaultSaveFolderPlaceholder: '例如: lumislate-html',
 		language: '界面语言',
 		languageDesc: '选择插件界面的显示语言',
 		langZhCn: '简体中文',
@@ -215,6 +237,13 @@ const I18N = {
 		agentVendor: '厂商',
 		agentSelected: '已选中',
 		agentClickToSelect: '点击选择',
+		sectionCustomStyle: '自定义模式样式',
+		customBaseFontSize: '基准字号',
+		customBaseFontSizeDesc: '自定义模式的基准字号（px）。修改后，所有标题、间距等 rem 单位会按比例缩放',
+		customTextColor: '文字颜色',
+		customTextColorDesc: '自定义模式的默认文字颜色（HEX 格式）',
+		customFontFamily: '字体',
+		customFontFamilyDesc: '自定义模式的字体族（CSS font-family 格式）',
 	},
 	en: {
 		settingsTitle: 'LumiSlate Settings',
@@ -223,6 +252,9 @@ const I18N = {
 		defaultExportFolder: 'Default Export Folder',
 		defaultExportFolderDesc: 'Default folder for saving HTML to Vault (relative to Vault root). Leave empty to use current note directory.',
 		defaultExportFolderPlaceholder: 'e.g. exports',
+		htmlDefaultSaveFolder: 'HTML Default Save Folder',
+		htmlDefaultSaveFolderDesc: 'Default folder for saving HTML in custom mode (relative to Vault root). Leave empty to use current note directory.',
+		htmlDefaultSaveFolderPlaceholder: 'e.g. lumislate-html',
 		language: 'Language',
 		languageDesc: 'Select the plugin interface language',
 		langZhCn: '简体中文',
@@ -274,6 +306,13 @@ const I18N = {
 		agentVendor: 'Vendor',
 		agentSelected: 'Selected',
 		agentClickToSelect: 'Click to select',
+		sectionCustomStyle: 'Custom Mode Style',
+		customBaseFontSize: 'Base Font Size',
+		customBaseFontSizeDesc: 'Base font size for custom mode (px). All headings and spacing in rem units will scale proportionally',
+		customTextColor: 'Text Color',
+		customTextColorDesc: 'Default text color for custom mode (HEX format)',
+		customFontFamily: 'Font Family',
+		customFontFamilyDesc: 'Font family for custom mode (CSS font-family format)',
 	},
 };
 
@@ -387,6 +426,62 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 					.setValue(p.settings.defaultExportFolder)
 					.onChange(async (value) => {
 						p.settings.defaultExportFolder = value.trim();
+						await p.saveSettings();
+					})
+			);
+
+			new Setting(containerEl)
+				.setName(t(p, 'htmlDefaultSaveFolder'))
+				.setDesc(t(p, 'htmlDefaultSaveFolderDesc'))
+				.addText((text) =>
+					text
+						.setPlaceholder(t(p, 'htmlDefaultSaveFolderPlaceholder'))
+						.setValue(p.settings.htmlDefaultSaveFolder)
+						.onChange(async (value) => {
+							p.settings.htmlDefaultSaveFolder = value.trim();
+							await p.saveSettings();
+						})
+				);
+
+		// ==== 自定义模式样式设置 ====
+		containerEl.createEl('h3', { text: t(p, 'sectionCustomStyle'), cls: 'lumislate-settings-subsection-title' });
+
+		new Setting(containerEl)
+			.setName(t(p, 'customBaseFontSize'))
+			.setDesc(t(p, 'customBaseFontSizeDesc'))
+			.addSlider((slider) =>
+				slider
+					.setLimits(12, 24, 1)
+					.setValue(p.settings.customBaseFontSize)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						p.settings.customBaseFontSize = value;
+						await p.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName(t(p, 'customTextColor'))
+			.setDesc(t(p, 'customTextColorDesc'))
+			.addText((text) =>
+				text
+					.setPlaceholder('#e2e8f0')
+					.setValue(p.settings.customTextColor)
+					.onChange(async (value) => {
+						p.settings.customTextColor = value.trim() || '#e2e8f0';
+						await p.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName(t(p, 'customFontFamily'))
+			.setDesc(t(p, 'customFontFamilyDesc'))
+			.addText((text) =>
+				text
+					.setPlaceholder('system-ui, -apple-system, sans-serif')
+					.setValue(p.settings.customFontFamily)
+					.onChange(async (value) => {
+						p.settings.customFontFamily = value.trim() || 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 						await p.saveSettings();
 					})
 			);
