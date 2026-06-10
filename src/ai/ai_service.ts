@@ -28,6 +28,39 @@ export interface StreamCallbacks {
 
 export type AIProvider = 'local' | 'http';
 
+export interface TestConnectionResult {
+	success: boolean;
+	message: string;
+}
+
+/**
+ * 测试 HTTP API 连接
+ * 发送一个轻量级请求验证 API 是否可用
+ */
+export async function testHttpConnection(config: LLMConfig): Promise<TestConnectionResult> {
+	try {
+		const res = await fetch(config.baseURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${config.apiKey}`,
+			},
+			body: JSON.stringify({
+				model: config.model,
+				messages: [{ role: 'user', content: 'hi' }],
+				max_tokens: 1,
+			}),
+		});
+		if (res.ok) {
+			return { success: true, message: '连接成功' };
+		}
+		const text = await res.text().catch(() => res.statusText);
+		return { success: false, message: `HTTP ${res.status}: ${text}` };
+	} catch (err) {
+		return { success: false, message: String((err as Error)?.message ?? err) };
+	}
+}
+
 export interface AICompileOptions {
 	provider: AIProvider;
 	/** 本地 agent ID（provider=local 时使用） */

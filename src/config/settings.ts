@@ -1,8 +1,8 @@
 import { App, PluginSettingTab, Setting, setIcon, Notice } from 'obsidian';
 import type LumiSlatePlugin from '../core/main';
 import { MODES, type Mode } from '../ai/skills';
-import { LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT } from '../ai/skills';
-import { detectAgents, refreshAgents } from '../ai/local_agent';
+import { detectAgents, refreshAgents, detectAgent } from '../ai/local_agent';
+import { testHttpConnection } from '../ai/ai_service';
 
 export interface LumiSlateSettings {
 	aiProvider: 'local' | 'http';
@@ -20,10 +20,6 @@ export interface LumiSlateSettings {
 	disableAiExtras: boolean;
 	/** 自定义模式 CSS 系统提示词 */
 	cssSystemPrompt: string;
-	/** 长文模式预处理系统提示词 */
-	preprocessLongformPrompt: string;
-	/** 幻灯片模式预处理系统提示词 */
-	preprocessSlidePrompt: string;
 	/**
 	 * Slide 版式映射表
 	 * key = 文件路径, value = { slideIndex: layoutId }
@@ -162,8 +158,6 @@ export const DEFAULT_SETTINGS: LumiSlateSettings = {
 	language: 'zh-cn',
 	disableAiExtras: true,
 	cssSystemPrompt: DEFAULT_CSS_SYSTEM_PROMPT,
-	preprocessLongformPrompt: LONGFORM_PREPROCESS_PROMPT,
-	preprocessSlidePrompt: SLIDE_PREPROCESS_PROMPT,
 	slideLayouts: {},
 	customBaseFontSize: 16,
 	customTextColor: '#e2e8f0',
@@ -212,16 +206,17 @@ const I18N = {
 		model: '模型',
 		modelDesc: '使用的模型 ID',
 		apiRefTitle: '常用 API 配置参考',
+		testConnection: '检测连接',
+		testConnectionDesc: '测试当前配置的 API 或 Agent 是否可以正常连接',
+		testConnectionBtn: '检测连接',
+		connectionOk: '连接成功',
+		connectionFailed: '连接失败',
 		disableAiExtras: '禁用 AI 额外输出',
 		disableAiExtrasDesc: '开启后，AI 渲染时将禁止输出 insight、thinking、analysis 等额外标记，避免干扰 HTML 渲染',
 		sectionAiAccess: 'AI 接入配置',
 		sectionSystemPrompts: '系统提示词设置',
-		preprocessTitle: '文本预处理',
-		preprocessDesc: '自定义文本预处理时 AI 遵循的系统提示词。修改保存后，在自定义模式中使用预处理功能时立即生效。',
 		cssDesignTitle: 'CSS 设计',
 		cssDesignDesc: '自定义 AI 辅助 CSS 编辑时遵循的系统提示词。修改保存后，下次打开 CSS 编辑器时立即生效。',
-		promptLongformLabel: '长文模式',
-		promptSlideLabel: '幻灯片模式',
 		useSkillLabel: '使用 Skill',
 		useSkillPlaceholder: '暂不可用',
 		btnSave: '确认保存',
@@ -281,16 +276,17 @@ const I18N = {
 		model: 'Model',
 		modelDesc: 'Model ID to use',
 		apiRefTitle: 'Common API Configurations',
+		testConnection: 'Test Connection',
+		testConnectionDesc: 'Test whether the current API or Agent can connect successfully',
+		testConnectionBtn: 'Test',
+		connectionOk: 'Connection successful',
+		connectionFailed: 'Connection failed',
 		disableAiExtras: 'Disable AI Extra Output',
 		disableAiExtrasDesc: 'When enabled, AI rendering will suppress insight, thinking, analysis, and other extra markers to avoid interfering with HTML rendering',
 		sectionAiAccess: 'AI Access Configuration',
 		sectionSystemPrompts: 'System Prompt Settings',
-		preprocessTitle: 'Text Preprocessing',
-		preprocessDesc: 'Custom system prompt for AI text preprocessing. Changes take effect immediately when using the preprocess feature in custom mode.',
 		cssDesignTitle: 'CSS Design',
 		cssDesignDesc: 'Custom system prompt for AI-assisted CSS editing. Changes take effect immediately the next time the CSS editor opens.',
-		promptLongformLabel: 'Longform',
-		promptSlideLabel: 'Slide',
 		useSkillLabel: 'Use Skill',
 		useSkillPlaceholder: 'Not available',
 		btnSave: 'Save',
@@ -549,6 +545,21 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 							this.display();
 						});
 					});
+
+				new Setting(el)
+					.setName(t(p, 'testConnection'))
+					.setDesc(t(p, 'testConnectionDesc'))
+					.addButton((btn) => {
+						btn.setButtonText(t(p, 'testConnectionBtn'));
+						btn.onClick(async () => {
+							const agent = detectAgent(p.settings.localAgent);
+							if (agent?.available) {
+								new Notice(`${t(p, 'connectionOk')}: ${agent.label}`);
+							} else {
+								new Notice(`${t(p, 'connectionFailed')}: ${p.settings.localAgent || '未选择 Agent'}`);
+							}
+						});
+					});
 			}
 
 			if (p.settings.aiProvider === 'http') {
@@ -600,35 +611,30 @@ export class LumiSlateSettingTab extends PluginSettingTab {
 				ref.createEl('li', { text: 'DeepSeek: https://api.deepseek.com/v1/chat/completions' });
 				ref.createEl('li', { text: 'OpenRouter: https://openrouter.ai/api/v1/chat/completions' });
 				ref.createEl('li', { text: 'SiliconFlow: https://api.siliconflow.cn/v1/chat/completions' });
+
+				new Setting(el)
+					.setName(t(p, 'testConnection'))
+					.setDesc(t(p, 'testConnectionDesc'))
+					.addButton((btn) => {
+						btn.setButtonText(t(p, 'testConnectionBtn'));
+						btn.onClick(async () => {
+							const result = await testHttpConnection({
+								apiKey: p.settings.apiKey,
+								baseURL: p.settings.apiBaseUrl,
+								model: p.settings.model,
+							});
+							if (result.success) {
+								new Notice(t(p, 'connectionOk'));
+							} else {
+								new Notice(`${t(p, 'connectionFailed')}: ${result.message}`);
+							}
+						});
+					});
 			}
 		}, true);
 
 		// ==== 折叠区域 2：系统提示词设置 ====
 		this.renderCollapsibleSection(containerEl, t(p, 'sectionSystemPrompts'), (el) => {
-			// ---- 文本预处理 ----
-			el.createEl('h3', { text: t(p, 'preprocessTitle'), cls: 'lumislate-settings-subsection-title' });
-			el.createEl('p', {
-				text: t(p, 'preprocessDesc'),
-				cls: 'setting-item-description',
-			});
-
-			// 长文模式提示词
-			this.renderSystemPromptBlock(el, {
-				label: t(p, 'promptLongformLabel'),
-				getValue: () => p.settings.preprocessLongformPrompt,
-				setValue: (v) => { p.settings.preprocessLongformPrompt = v; },
-				defaultValue: LONGFORM_PREPROCESS_PROMPT,
-			});
-
-			// 幻灯片模式提示词
-			this.renderSystemPromptBlock(el, {
-				label: t(p, 'promptSlideLabel'),
-				getValue: () => p.settings.preprocessSlidePrompt,
-				setValue: (v) => { p.settings.preprocessSlidePrompt = v; },
-				defaultValue: SLIDE_PREPROCESS_PROMPT,
-			});
-
-			// ---- CSS 设计 ----
 			el.createEl('h3', { text: t(p, 'cssDesignTitle'), cls: 'lumislate-settings-subsection-title' });
 			el.createEl('p', {
 				text: t(p, 'cssDesignDesc'),

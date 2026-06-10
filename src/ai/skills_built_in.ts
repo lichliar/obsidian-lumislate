@@ -1,6 +1,6 @@
 // ⚠️ 本文件由 scripts/bundle-skills.js 自动生成，请勿手动编辑
 // 如需增删改 skill，请直接修改 skills/ 目录下的 SKILL.md，然后运行 npm run build
-// 生成时间: 2026-06-10T06:30:05.756Z
+// 生成时间: 2026-06-10T08:57:37.063Z
 
 import type { LoadedSkill } from './skill_loader';
 

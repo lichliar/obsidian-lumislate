@@ -2,7 +2,7 @@ import { Plugin, ItemView, WorkspaceLeaf, MarkdownView, Notice, Modal, TextAreaC
 import { CacheManager } from '../utils/cache_manager';
 import { extractFrontmatter, extractFrontmatterValue, compileWithAI, previewHtml, extractHtml } from '../ai/ai_service';
 import { getAvailableAgents, detectAgent } from '../ai/local_agent';
-import { SKILLS, getSkillById, assemblePrompt, parseCustomDirectives, CUSTOM_BODY, MODES, getModeById, LONGFORM_PREPROCESS_PROMPT, SLIDE_PREPROCESS_PROMPT } from '../ai/skills';
+import { SKILLS, getSkillById, assemblePrompt, parseCustomDirectives, CUSTOM_BODY, MODES, getModeById } from '../ai/skills';
 import type { Mode, Skill } from '../ai/skills';
 import { LumiSlateSettingTab, DEFAULT_SETTINGS, DEFAULT_CSS_SYSTEM_PROMPT } from '../config/settings';
 import type { LumiSlateSettings } from '../config/settings';
@@ -1835,7 +1835,7 @@ body {
 </head>
 <body>
 <div class="guide">
-  <h1>🤖 请先接入 AI</h1>
+  <h1>🤖 当前无可用AI</h1>
   <p>AI 模式需要配置本地 CLI Agent 或在线 API 才能生成精美排版。请按以下步骤完成配置：</p>
   <div class="guide-steps">
     <div class="step">
@@ -2492,7 +2492,6 @@ export class LumiSlateView extends ItemView {
 	private customSizeSelect: HTMLSelectElement | null = null;
 	private customCssBtn: HTMLButtonElement | null = null;
 	private customCssNameEl: HTMLElement | null = null;
-	private customPreprocessBtn: HTMLButtonElement | null = null;
 	private layoutBtn: HTMLButtonElement | null = null;
 	private saveBtn: HTMLButtonElement | null = null;
 	private clearCacheBtn: HTMLButtonElement | null = null;
@@ -2524,8 +2523,6 @@ export class LumiSlateView extends ItemView {
 	onExport: (() => void) | null = null;
 	onCustomSizeChange: ((size: string) => void) | null = null;
 	onCustomCss: (() => void) | null = null;
-	onCustomPreprocessLongform: (() => void) | null = null;
-	onCustomPreprocessSlide: (() => void) | null = null;
 	onSlideLayoutChange: ((layout: string) => void) | null = null;
 	onSaveHtml: (() => void) | null = null;
 	onGoHome: (() => void) | null = null;
@@ -2685,12 +2682,6 @@ export class LumiSlateView extends ItemView {
 	// ============ 操作按钮（已合并到顶部工具栏） ============
 
 	private buildCustomActions(container: HTMLElement): void {
-		// 文本预处理：下拉菜单（长文模式 / 幻灯片模式）
-		this.customPreprocessBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
-		setIcon(this.customPreprocessBtn.createSpan(), 'file-text');
-		this.customPreprocessBtn.appendText(' 文本预处理');
-		this.customPreprocessBtn.addEventListener('click', (evt) => this.showPreprocessMenu(evt));
-
 		// 尺寸选择下拉框
 		this.customSizeSelect = container.createEl('select', { cls: 'lumislate-skill-select' });
 		const sizes = [
@@ -2867,7 +2858,6 @@ export class LumiSlateView extends ItemView {
 	private updateActionBarState(): void {
 		if (this._isRendering) {
 			// 渲染中：禁用操作按钮
-			if (this.customPreprocessBtn) this.customPreprocessBtn.disabled = true;
 			if (this.exportBtn) this.exportBtn.disabled = true;
 			if (this.customSizeSelect) this.customSizeSelect.disabled = true;
 			if (this.layoutBtn) this.layoutBtn.disabled = true;
@@ -2877,7 +2867,6 @@ export class LumiSlateView extends ItemView {
 			if (this.clearCacheBtn) this.clearCacheBtn.disabled = true;
 		} else {
 			// 空闲：启用操作按钮
-			if (this.customPreprocessBtn) this.customPreprocessBtn.disabled = false;
 			// 自定义模式下导出始终可用（实时渲染，iframe 始终有内容）
 			// Design 模式下需要等有缓存或累积输出
 			if (this.exportBtn) {
@@ -2891,22 +2880,6 @@ export class LumiSlateView extends ItemView {
 			if (this.settingsBtn) this.settingsBtn.disabled = false;
 			if (this.clearCacheBtn) this.clearCacheBtn.disabled = !(this._hasCache || this._hasAccumulated);
 		}
-	}
-
-	/** 显示自定义模式预处理下拉菜单 */
-	showPreprocessMenu(evt: MouseEvent): void {
-		const menu = new Menu();
-		menu.addItem((item) => {
-			item.setTitle('长文模式')
-				.setIcon('file-text')
-				.onClick(() => this.onCustomPreprocessLongform?.());
-		});
-		menu.addItem((item) => {
-			item.setTitle('幻灯片模式')
-				.setIcon('presentation')
-				.onClick(() => this.onCustomPreprocessSlide?.());
-		});
-		menu.showAtMouseEvent(evt);
 	}
 
 	/** 更新状态文本 */
@@ -3072,8 +3045,6 @@ export default class LumiSlatePlugin extends Plugin {
 					// @ts-expect-error 内部 API
 					this.app.setting.openTabById(this.manifest.id);
 				};
-				view.onCustomPreprocessLongform = () => this.preprocessCustomCurrentNote('longform');
-				view.onCustomPreprocessSlide = () => this.preprocessCustomCurrentNote('slide');
 				view.onExport = () => this.showExportMenu();
 					view.onSaveHtml = () => this.saveCustomHtml();
 				view.onCustomSizeChange = (size) => this.handleCustomSizeChange(size);
@@ -3211,12 +3182,6 @@ export default class LumiSlatePlugin extends Plugin {
 		// 确保系统提示词字段有默认值（用户 data.json 可能残留空字符串）
 		if (!this.settings.cssSystemPrompt?.trim()) {
 			this.settings.cssSystemPrompt = DEFAULT_CSS_SYSTEM_PROMPT;
-		}
-		if (!this.settings.preprocessLongformPrompt?.trim()) {
-			this.settings.preprocessLongformPrompt = LONGFORM_PREPROCESS_PROMPT;
-		}
-		if (!this.settings.preprocessSlidePrompt?.trim()) {
-			this.settings.preprocessSlidePrompt = SLIDE_PREPROCESS_PROMPT;
 		}
 		await this.saveSettings();
 	}
@@ -3501,11 +3466,11 @@ export default class LumiSlatePlugin extends Plugin {
 		}
 
 		// 决定使用哪种 provider
-		const resolved = this.resolveAIProvider();
-		if (resolved.provider === 'http' && !this.settings.apiKey) {
-			new Notice('未配置 AI：请在设置中选择本地 Agent 或配置 HTTP API Key');
+		if (!this.isAiConfigured()) {
+			new Notice('当前无可用AI，请在设置中配置本地 Agent 或 HTTP API');
 			return;
 		}
+		const resolved = this.resolveAIProvider();
 
 		// 内部渲染函数
 		const doRender = async (renderMarkdown: string, renderNotePath: string) => {
@@ -3710,192 +3675,6 @@ export default class LumiSlatePlugin extends Plugin {
 
 		// AI 模式取消预处理，全权交给 agent 处理
 		await doRender(markdown, notePath);
-	}
-
-	// ------------------- 预处理 -------------------
-
-	/**
-	 * 自定义模式 — AI 驱动的预处理
-	 * @param type 'longform' 长文模式 | 'slide' 幻灯片模式
-	 */
-	async preprocessCustomCurrentNote(type: 'longform' | 'slide'): Promise<void> {
-		const activeFile = this.app.workspace.getActiveFile();
-		if (!activeFile || activeFile.extension !== 'md') {
-			new Notice('请先打开一个 Markdown 笔记');
-			return;
-		}
-
-		// 检查 AI 配置
-		const resolved = this.resolveAIProvider();
-		if (resolved.provider === 'http' && !this.settings.apiKey) {
-			new Notice('未配置 AI：请在设置中选择本地 Agent 或配置 HTTP API Key');
-			return;
-		}
-
-		const view = this.getLumiSlateView();
-		if (view) {
-			view.setRenderingState(true);
-			view.setStatus('AI 预处理中…');
-		}
-
-		const markdown = await this.app.vault.read(activeFile);
-		const { body } = extractFrontmatter(markdown);
-		const prompt = type === 'longform'
-			? (this.settings.preprocessLongformPrompt?.trim() || LONGFORM_PREPROCESS_PROMPT)
-			: (this.settings.preprocessSlidePrompt?.trim() || SLIDE_PREPROCESS_PROMPT);
-
-		new Notice(`正在使用 AI 进行${type === 'longform' ? '长文' : '幻灯片'}预处理…`);
-
-		// 初始化 metrics（与 AI 渲染共用同一套统计）
-		this.currentRunStats = {
-			startedAt: Date.now(),
-			deltaCount: 0,
-			outputBytes: 0,
-		};
-		this.startMetricsTimer();
-		if (view) view.updateMetrics(this.currentRunStats);
-
-		try {
-			const preprocessedBody = await this.runPreprocessWithAI(body, prompt, {
-				onDelta: (text) => {
-					if (this.currentRunStats) {
-						if (!this.currentRunStats.firstByteAt) {
-							this.currentRunStats.firstByteAt = Date.now();
-						}
-						this.currentRunStats.deltaCount++;
-						this.currentRunStats.outputBytes += new TextEncoder().encode(text).length;
-						this.updateMetricsDisplay();
-					}
-				},
-				onMeta: (key, value) => {
-					if (key === 'model' && typeof value === 'string') {
-						if (this.currentRunStats) this.currentRunStats.model = value;
-					}
-					if (key === 'usage' && value && typeof value === 'object') {
-						const u = value as Record<string, number>;
-						if (this.currentRunStats) {
-							this.currentRunStats.inputTokens = u.input_tokens ?? u.prompt_tokens;
-							this.currentRunStats.outputTokens = u.completion_tokens ?? u.output_tokens;
-						}
-					}
-					this.updateMetricsDisplay();
-				},
-			});
-
-			// 结束 metrics
-			if (this.currentRunStats) {
-				this.currentRunStats.endedAt = Date.now();
-				this.updateMetricsDisplay();
-			}
-			this.stopMetricsTimer();
-			if (view) view.hideMetrics();
-
-			// 组装完整内容（保留原始 frontmatter）
-			const { frontmatter } = extractFrontmatter(markdown);
-			let newFrontmatter = frontmatter || '';
-			if (newFrontmatter) {
-				// 移除旧的预处理标记（如果存在）
-				newFrontmatter = newFrontmatter
-					.replace(/^lumislate_preprocessed:.*$/m, '')
-					.replace(/^lumislate_preprocessed_for:.*$/m, '')
-					.replace(/^lumislate_preprocess_type:.*$/m, '')
-					.replace(/^lumislate_preprocessed_at:.*$/m, '')
-					.replace(/\n{3,}/g, '\n');
-				newFrontmatter += `\nlumislate_preprocessed: true\nlumislate_preprocessed_for: custom\nlumislate_preprocess_type: ${type}\nlumislate_preprocessed_at: ${new Date().toISOString()}`;
-			} else {
-				newFrontmatter = `lumislate_preprocessed: true\nlumislate_preprocessed_for: custom\nlumislate_preprocess_type: ${type}\nlumislate_preprocessed_at: ${new Date().toISOString()}`;
-			}
-
-			const finalContent = `---\n${newFrontmatter.trim()}\n---\n\n${preprocessedBody}`;
-
-			// 保存到 _preprocessed.md（不改动原始文件）
-			const newPath = activeFile.path.replace(/\.md$/i, '_preprocessed.md');
-			const existing = this.app.vault.getAbstractFileByPath(newPath);
-			if (existing instanceof TFile) {
-				await this.app.vault.modify(existing, finalContent);
-				new Notice(`已更新预处理文件: ${existing.name}`);
-			} else {
-				const newFile = await this.app.vault.create(newPath, finalContent);
-				new Notice(`已创建预处理文件: ${newFile.name}`);
-			}
-
-			// 自动渲染预处理后的文件
-			await this.renderCurrentNote();
-		} catch (err) {
-			const msg = String((err as Error)?.message ?? err);
-			new Notice(`预处理失败: ${msg}`);
-			if (view) view.setStatus(`预处理失败: ${msg.slice(0, 40)}`);
-		} finally {
-			this.stopMetricsTimer();
-			if (view) {
-				view.setRenderingState(false);
-				view.setStatus('');
-			}
-		}
-	}
-
-	/**
-	 * 调用 AI agent 进行语义级预处理
-	 */
-	private async runPreprocessWithAI(
-		body: string,
-		prompt: string,
-		callbacks?: {
-			onDelta?: (text: string) => void;
-			onMeta?: (key: string, value: unknown) => void;
-		}
-	): Promise<string> {
-		const resolved = this.resolveAIProvider();
-		const fullPrompt = `${prompt}\n\n【用户内容】:\n${body}`;
-
-		return new Promise((resolve, reject) => {
-			let result = '';
-			const ctl = new AbortController();
-			this.aiAbortCtl = ctl;
-
-			compileWithAI(
-				fullPrompt,
-				{
-					provider: resolved.provider,
-					agentId: resolved.agentId,
-					binOverride: this.settings.localAgentBinOverride,
-					llmConfig: {
-						apiKey: this.settings.apiKey,
-						baseURL: this.settings.apiBaseUrl,
-						model: this.settings.model,
-					},
-					model: resolved.provider === 'local' ? undefined : this.settings.model,
-					signal: ctl.signal,
-				},
-				{
-					onDelta: (text) => {
-						result += text;
-						callbacks?.onDelta?.(text);
-					},
-					onHtml: (text) => { result = text; },
-					onMeta: (key, value) => {
-						callbacks?.onMeta?.(key, value);
-					},
-					onStderr: () => {},
-					onError: (err) => {
-						this.aiAbortCtl = null;
-						reject(new Error(err));
-					},
-					onDone: () => {
-						this.aiAbortCtl = null;
-						// 清理可能的代码块包裹
-						const fenceMatch = result.match(/```(?:markdown)?\s*([\s\S]*?)```/);
-						if (fenceMatch) {
-							result = fenceMatch[1].trim();
-						}
-						resolve(result);
-					},
-				}
-			).catch((err) => {
-				this.aiAbortCtl = null;
-				reject(err);
-			});
-		});
 	}
 
 	// ------------------- 导出 -------------------
@@ -4238,14 +4017,236 @@ ${ruleBody}`;
 		}
 	}
 
+
 	/** 显示自定义模式 CSS 编辑弹窗 — 三栏：左侧文件列表，中间代码编辑，右侧 AI 助手 */
 	async showCustomCssModal(): Promise<void> {
+		const DEFAULT_CUSTOM_CSS = `/* LumiSlate 默认幻灯片样式 */
+
+/* 幻灯片基础 */
+section {
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+  color: #e2e8f0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* 标题体系 */
+section h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  margin-bottom: 1.5rem;
+  letter-spacing: -0.02em;
+  color: #f8fafc;
+}
+
+section h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 1.5rem 0 1rem;
+  color: #e2e8f0;
+}
+
+section h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  color: #cbd5e1;
+}
+
+section h4 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.4rem;
+  color: #94a3b8;
+}
+
+/* 段落与文本 */
+section p {
+  line-height: 1.75;
+  margin-bottom: 0.75rem;
+}
+
+section strong {
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+section em {
+  font-style: italic;
+  color: #cbd5e1;
+}
+
+section mark {
+  background: rgba(250, 204, 21, 0.25);
+  color: inherit;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+section del {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+section u {
+  text-decoration: underline;
+  text-decoration-color: rgba(96, 165, 250, 0.6);
+  text-underline-offset: 3px;
+}
+
+section a {
+  color: #60a5fa;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+section a:hover {
+  color: #93c5fd;
+  text-decoration: underline;
+}
+
+/* 列表 */
+section ul, section ol {
+  margin-left: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+section li {
+  margin-bottom: 0.35rem;
+}
+
+/* 代码 */
+section pre {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+
+section code {
+  font-family: "Fira Code", "JetBrains Mono", "SF Mono", Monaco, monospace;
+  font-size: 0.85em;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+}
+
+/* 表格 */
+section table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.85rem;
+}
+
+section th, section td {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+
+section th {
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 600;
+}
+
+/* 引用块 */
+section blockquote {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid rgba(255, 255, 255, 0.2);
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Callout */
+section .callout {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border-left: 3px solid;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+section .callout-title {
+  font-weight: 700;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+section .callout-note { border-left-color: #3b82f6; }
+section .callout-note > .callout-title { color: #3b82f6; }
+section .callout-tip { border-left-color: #22c55e; }
+section .callout-tip > .callout-title { color: #22c55e; }
+section .callout-warning { border-left-color: #f59e0b; }
+section .callout-warning > .callout-title { color: #f59e0b; }
+section .callout-danger { border-left-color: #ef4444; }
+section .callout-danger > .callout-title { color: #ef4444; }
+
+/* 图片 */
+section img {
+  max-width: 100%;
+  max-height: 260px;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  margin: 0.5rem auto;
+  object-fit: contain;
+}
+
+/* 水平线 */
+section hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 1.5rem 0;
+}
+
+/* 任务列表 */
+section .task-list {
+  list-style: none;
+  margin-left: 0;
+  padding-left: 0;
+}
+
+section .task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+}
+
+section .task-list-item input[type="checkbox"] {
+  margin-top: 0.15rem;
+  accent-color: #60a5fa;
+}
+
+/* 数学公式 */
+section .math-block {
+  background: rgba(0, 0, 0, 0.15);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  text-align: center;
+  margin: 0.5rem 0;
+}
+`;
+
 		const cssDir = `${this.manifest.dir}/css`;
 
 		// 确保 css 目录存在
 		const dirExists = await this.app.vault.adapter.exists(cssDir);
 		if (!dirExists) {
 			await this.app.vault.adapter.mkdir(cssDir);
+		}
+
+		// 如果目录中没有 CSS 文件，自动创建默认 CSS
+		const listing = await this.app.vault.adapter.list(cssDir).catch(() => ({ files: [] as string[], folders: [] as string[] }));
+		const hasCssFiles = listing.files.some((f) => f.endsWith('.css'));
+		if (!hasCssFiles) {
+			const defaultPath = `${cssDir}/default.css`;
+			await this.app.vault.adapter.write(defaultPath, DEFAULT_CUSTOM_CSS);
+			new Notice('已创建默认 CSS 预设: default.css');
 		}
 
 		const modal = new Modal(this.app);
@@ -4607,6 +4608,29 @@ ${ruleBody}`;
 			textArea.setValue(content);
 		}
 
+		// 未保存退出提醒
+		const originalClose = modal.close.bind(modal);
+		modal.close = () => {
+			if (hasUnsavedChanges) {
+				const shouldSave = confirm('CSS 代码未保存，是否保存后再关闭？\n\n【确定】保存并关闭\n【取消】直接关闭（不保存）');
+				if (shouldSave) {
+					if (selectedFile) {
+						this.app.vault.adapter.write(getFilePath(selectedFile), textArea.getValue())
+							.then(() => {
+								hasUnsavedChanges = false;
+								new Notice(`已保存 ${selectedFile}`);
+								originalClose();
+							})
+							.catch(() => {
+								new Notice('保存失败');
+							});
+						return;
+					}
+				}
+			}
+			originalClose();
+		};
+
 		modal.open();
 	}
 
@@ -4894,6 +4918,12 @@ ${contentPreview}
 	private handleSkillSelect(skillId: string): void {
 		const skill = getSkillById(skillId);
 		if (!skill) return;
+
+		// 检查 AI 是否可用
+		if (!this.isAiConfigured()) {
+			new Notice('当前无可用AI，请在设置中配置本地 Agent 或 HTTP API');
+			return;
+		}
 
 		const view = this.getLumiSlateView();
 		if (view) {
