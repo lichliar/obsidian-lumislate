@@ -1,4 +1,4 @@
-import { App, Modal, ButtonComponent, setIcon } from 'obsidian';
+import { App, Modal, ButtonComponent, setIcon, FuzzySuggestModal, TFile } from 'obsidian';
 import type { Skill } from '../ai/skills';
 
 export type ExportType = 'html-download' | 'png-download' | 'html-vault';
@@ -196,5 +196,37 @@ export class SkillConfirmModal extends Modal {
 	onClose(): void {
 		const { contentEl } = this;
 		contentEl.empty();
+	}
+}
+
+/** 图片文件选择器：从 Vault 中选择图片文件 */
+export class ImagePickerModal extends FuzzySuggestModal<TFile> {
+	private imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
+
+	constructor(
+		app: App,
+		private onSelect: (file: TFile) => void
+	) {
+		super(app);
+		this.setPlaceholder('搜索图片文件名...');
+		this.setInstructions([
+			{ command: '↑↓', purpose: '选择' },
+			{ command: '↵', purpose: '确认' },
+			{ command: 'esc', purpose: '取消' },
+		]);
+	}
+
+	getItems(): TFile[] {
+		return this.app.vault.getFiles().filter((f) =>
+			this.imageExtensions.includes(f.extension.toLowerCase())
+		);
+	}
+
+	getItemText(file: TFile): string {
+		return file.path;
+	}
+
+	onChooseItem(file: TFile): void {
+		this.onSelect(file);
 	}
 }

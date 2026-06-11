@@ -83,7 +83,7 @@ export const CUSTOM_BODY = `【模板: 自定义模式 幻灯片 / Presentation 
 2. YAML 指令解析: 用户的 frontmatter 中可能包含自定义模式指令, 你必须识别并应用:
    - theme: 主题名称 (你根据名称选择合适的配色方案)
    - paginate: true/false — 是否在右下角显示页码
-   - size: 16:9 (默认) 或 4:3 — 决定幻灯片宽高比
+   - size: 16:9 (默认), 16:10, 4:3, 3:2, 1:1, 21:9, 9:16 — 决定幻灯片宽高比
    - class: 全局 CSS 类名, 加到每个 <section> 上
    - backgroundColor / backgroundImage / backgroundSize / backgroundPosition / backgroundRepeat: 全局背景设置
    - color: 全局文字颜色

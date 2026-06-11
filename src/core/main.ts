@@ -8,7 +8,7 @@ import { LumiSlateSettingTab, DEFAULT_SETTINGS, DEFAULT_CSS_SYSTEM_PROMPT } from
 import type { LumiSlateSettings } from '../config/settings';
 import { checkPreprocessedState, detectSpecialSyntax } from '../utils/preprocess';
 import { downloadHtml, downloadPngFromIframe, saveHtmlToVault } from '../utils/export';
-import { ExportMenuModal, SkillGalleryModal, SkillConfirmModal } from '../ui/modals';
+import { ExportMenuModal, SkillGalleryModal, SkillConfirmModal, ImagePickerModal } from '../ui/modals';
 
 export const LUMISLATE_VIEW_TYPE = 'lumislate-canvas-view';
 
@@ -39,26 +39,49 @@ function resolveImagePaths(markdown: string, app: App, sourcePath: string): stri
 		if (file instanceof TFile) {
 			return `![${filename}](${app.vault.getResourcePath(file)})`;
 		}
+		// 备选：直接遍历 Vault 中的文件进行模糊匹配（metadataCache 偶尔索引不全）
+		const allFiles = app.vault.getFiles();
+		const matched = allFiles.find((f) => f.name === filename || f.basename === filename);
+		if (matched) {
+			return `![${filename}](${app.vault.getResourcePath(matched)})`;
+		}
 		return match;
 	});
 
-	// 标准 Markdown 图片（跳过已转换的外部 URL）
-	result = result.replace(/!\[([^\]]*?)\]\(([^)]+?)\)/g, (match, alt, path) => {
-		if (/^(https?:|data:|app:|obsidian:)/i.test(path)) {
-			return match;
+	// 标准 Markdown 图片（按行处理，避免正则回溯问题）
+	const lines = result.split('\n');
+	for (let i = 0; i < lines.length; i++) {
+		const trimmed = lines[i].trim();
+		if (trimmed.startsWith('![') && trimmed.endsWith(')')) {
+			const closeBracket = trimmed.indexOf(']');
+			if (closeBracket >= 2 && trimmed[closeBracket + 1] === '(') {
+				const alt = trimmed.slice(2, closeBracket);
+				// 用括号计数找到匹配的 )
+				let depth = 1;
+				let urlEnd = closeBracket + 2;
+				while (urlEnd < trimmed.length - 1 && depth > 0) {
+					if (trimmed[urlEnd] === '(') depth++;
+					else if (trimmed[urlEnd] === ')') depth--;
+					urlEnd++;
+				}
+				const path = trimmed.slice(closeBracket + 2, urlEnd - 1);
+				if (path.length > 0 && !/^(https?:|data:|app:|obsidian:)/i.test(path)) {
+					const file = app.vault.getAbstractFileByPath(path);
+					if (file instanceof TFile) {
+						lines[i] = `![${alt}](${app.vault.getResourcePath(file)})`;
+						continue;
+					}
+					const sourceDir = sourcePath.includes('/') ? sourcePath.substring(0, sourcePath.lastIndexOf('/')) : '';
+					const relPath = sourceDir ? `${sourceDir}/${path}` : path;
+					const relFile = app.vault.getAbstractFileByPath(relPath);
+					if (relFile instanceof TFile) {
+						lines[i] = `![${alt}](${app.vault.getResourcePath(relFile)})`;
+					}
+				}
+			}
 		}
-		const file = app.vault.getAbstractFileByPath(path);
-		if (file instanceof TFile) {
-			return `![${alt}](${app.vault.getResourcePath(file)})`;
-		}
-		const sourceDir = sourcePath.includes('/') ? sourcePath.substring(0, sourcePath.lastIndexOf('/')) : '';
-		const relPath = sourceDir ? `${sourceDir}/${path}` : path;
-		const relFile = app.vault.getAbstractFileByPath(relPath);
-		if (relFile instanceof TFile) {
-			return `![${alt}](${app.vault.getResourcePath(relFile)})`;
-		}
-		return match;
-	});
+	}
+	result = lines.join('\n');
 
 	return result;
 }
@@ -100,7 +123,16 @@ function markdownToSimpleHTML(markdown: string): string {
 			.replace(/==(.+?)==/g, '<mark>$1</mark>')
 			.replace(/~~(.+?)~~/g, '<del>$1</del>')
 			.replace(/`([^`]+?)`/g, '<code>$1</code>')
-			.replace(/!\[([^\]]*?)\]\(([^)]+?)\)/g, '<img alt="$1" src="$2">')
+			.replace(/!\[([^\]]*?)\]\(([^)]+?)\)/g, (m, alt, url) => {
+				let widthAttr = '';
+				let cleanAlt = alt;
+				const widthMatch = alt.match(/\|(\d+)$/);
+				if (widthMatch) {
+					cleanAlt = alt.slice(0, -widthMatch[0].length);
+					widthAttr = ` width="${widthMatch[1]}"`;
+				}
+				return `<img alt="${cleanAlt}" src="${url}"${widthAttr}>`;
+			})
 			.replace(/!\[\[([^\]]+?)\]\]/g, '<img alt="$1" src="$1">')
 			.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 			.replace(/\*(.+?)\*/g, '<em>$1</em>');
@@ -109,15 +141,42 @@ function markdownToSimpleHTML(markdown: string): string {
 	/** 检测一行是否只包含单个图片（无其他文本），返回 img HTML 或 null */
 	function extractImageOnly(line: string): string | null {
 		const trimmed = line.trim();
-		// 标准 Markdown 图片 ![alt](url) — resolveImagePaths 后 wiki 链接已被转换
-		const mdMatch = trimmed.match(/^!\[([^\]]*?)\]\((.*)\)$/);
-		if (mdMatch) {
-			return `<img alt="${escapeHtml(mdMatch[1])}" src="${escapeHtml(mdMatch[2])}">`;
+		// 标准 Markdown 图片 ![alt](url) —— 手动解析避免正则回溯问题
+		if (trimmed.startsWith('![') && trimmed.endsWith(')')) {
+			const closeBracket = trimmed.indexOf(']');
+			if (closeBracket >= 2 && trimmed[closeBracket + 1] === '(') {
+				const alt = trimmed.slice(2, closeBracket);
+				// 用括号计数找到匹配的 )
+				let depth = 1;
+				let urlEnd = closeBracket + 2;
+				while (urlEnd < trimmed.length - 1 && depth > 0) {
+					if (trimmed[urlEnd] === '(') depth++;
+					else if (trimmed[urlEnd] === ')') depth--;
+					urlEnd++;
+				}
+				// 此时 urlEnd 指向匹配 ) 的后一位（即末尾）
+				const url = trimmed.slice(closeBracket + 2, urlEnd - 1);
+				if (url.length > 0) {
+					// 支持 Obsidian 扩展语法：![alt|width](url) → 提取 width 为属性
+					let widthAttr = '';
+					let cleanAlt = alt;
+					const widthMatch = alt.match(/\|(\d+)$/);
+					if (widthMatch) {
+						cleanAlt = alt.slice(0, -widthMatch[0].length);
+						widthAttr = ` width="${widthMatch[1]}"`;
+					}
+					return `<img alt="${escapeHtml(cleanAlt)}" src="${escapeHtml(url)}"${widthAttr}>`;
+				}
+			}
 		}
-		// Wiki 链接图片 ![[filename]]（降级渲染未经过 resolveImagePaths 时可能遇到）
-		const wikiMatch = trimmed.match(/^!\[\[([^\]]+?)\]\]$/);
-		if (wikiMatch) {
-			return `<img alt="${escapeHtml(wikiMatch[1])}" src="${escapeHtml(wikiMatch[1])}">`;
+		// Wiki 链接图片 ![[filename|width]]
+		if (trimmed.startsWith('![[') && trimmed.endsWith(']]')) {
+			const inner = trimmed.slice(3, -2);
+			const pipeIndex = inner.indexOf('|');
+			const filename = pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner;
+			if (filename.length > 0) {
+				return `<img alt="${escapeHtml(filename)}" src="${escapeHtml(filename)}">`;
+			}
 		}
 		return null;
 	}
@@ -572,9 +631,10 @@ function parseSlides(body: string): Array<{ frontmatter: string; content: string
 /** 处理单页内容：支持 ::right:: 分栏，返回 HTML */
 function processSlideContent(content: string, layout: string): string {
 	const rightMarker = '\n::right::\n';
+	const hasRight = content.includes(rightMarker);
 
-	// two-cols 布局：按 ::right:: 分栏
-	if (layout === 'two-cols' && content.includes(rightMarker)) {
+	// 两栏系列布局：按 ::right:: 分栏
+	if ((layout === 'two-cols' || layout === 'two-cols-header' || layout === 'image-left' || layout === 'image-right') && hasRight) {
 		const parts = content.split(rightMarker);
 		const leftHtml = markdownToSimpleHTML(parts[0].trim());
 		const rightHtml = markdownToSimpleHTML(parts[1]?.trim() || '');
@@ -736,7 +796,7 @@ async function buildCustomFallbackPage(
 	pluginDir: string,
 	getLayout: (slideIndex: number) => string,
 	settings?: { baseFontSize?: number; textColor?: string; fontFamily?: string },
-): Promise<string> {
+): Promise<{ html: string; slideCount: number }> {
 	const { frontmatter, body } = extractFrontmatter(markdown);
 	const bgColor = extractFrontmatterValue(frontmatter, 'backgroundcolor') || extractFrontmatterValue(frontmatter, 'backgroundColor') || '#0f172a';
 	const textColor = extractFrontmatterValue(frontmatter, 'color') || settings?.textColor || '#e2e8f0';
@@ -757,7 +817,8 @@ async function buildCustomFallbackPage(
 
 	// 无分页符 → 长文模式
 	if (!hasDividers) {
-		return buildLongFormPage(body, { bgColor, textColor, customCss, baseFontSize: settings?.baseFontSize, fontFamily: settings?.fontFamily });
+		const html = buildLongFormPage(body, { bgColor, textColor, customCss, baseFontSize: settings?.baseFontSize, fontFamily: settings?.fontFamily });
+		return { html, slideCount: 1 };
 	}
 
 	// 有分页符 → 幻灯片模式（智能切分，识别每页独立 frontmatter）
@@ -792,7 +853,7 @@ async function buildCustomFallbackPage(
 		})
 		.join('\n');
 
-	return `<!DOCTYPE html>
+	const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -889,8 +950,8 @@ section .callout-question > .callout-title, section .callout-help > .callout-tit
 section .callout-example, section .callout-quote { border-left-color: var(--ls-callout-example-color); }
 section .callout-example > .callout-title, section .callout-quote > .callout-title { color: var(--ls-callout-example-color); }
 section img { max-width: 100%; max-height: 280px; height: auto; display: block; border-radius: 6px; margin: 0.5rem auto; object-fit: contain; }
-section .image-group { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; align-items: center; margin: 0.5rem 0; }
-section .image-group img { max-height: 220px; flex: 1 1 0; min-width: 0; margin: 0; }
+section .image-group { display: flex; flex-wrap: nowrap; gap: 0.75rem; justify-content: center; align-items: center; margin: 0.5rem 0; overflow: hidden; }
+section .image-group img { max-height: 220px; max-width: 48%; flex: 0 1 auto; min-width: 0; margin: 0; object-fit: contain; }
 section .image-group img:only-child { flex: 0 0 auto; max-width: 100%; max-height: 280px; }
 section pre { background: rgba(0,0,0,0.2); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; overflow-y: auto; max-width: 100%; max-height: 45%; margin: 0.5rem 0; }
 section pre code { font-family: 'Fira Code', 'JetBrains Mono', 'SF Mono', Monaco, monospace; font-size: 0.8rem; line-height: 1.5; background: transparent; padding: 0; }
@@ -929,6 +990,25 @@ section[data-layout="section"] h1 { letter-spacing: -0.02em; }
 section[data-layout="section"] h1::after { content: ''; display: block; width: 80px; height: 4px; background: linear-gradient(90deg, #6366f1, #a78bfa); margin: 1.5rem auto 0; border-radius: 2px; }
 section[data-layout="section"] h2 { opacity: 0.6; font-weight: 400; margin-top: 1rem; }
 section[data-layout="section"] *:not(h1):not(h2) { display: none; }
+
+section[data-layout="two-cols-header"] { display: grid !important; grid-template-rows: auto 1fr; grid-template-columns: 1fr 1fr; gap: 1.5rem 2rem; align-items: start; align-content: start; }
+section[data-layout="two-cols-header"] h1, section[data-layout="two-cols-header"] h2 { grid-column: 1 / -1; margin-bottom: 0.25rem; }
+section[data-layout="two-cols-header"] .col-left, section[data-layout="two-cols-header"] .col-right { overflow: hidden; min-width: 0; }
+
+section[data-layout="image-left"] { display: grid !important; grid-template-columns: 2fr 3fr; gap: 2rem; align-items: center; align-content: center; }
+section[data-layout="image-left"] .col-left { overflow: hidden; min-width: 0; display: flex; align-items: center; justify-content: center; }
+section[data-layout="image-left"] .col-left img { max-height: 100%; max-width: 100%; object-fit: contain; margin: 0; }
+section[data-layout="image-left"] .col-right { overflow: hidden; min-width: 0; }
+
+section[data-layout="image-right"] { display: grid !important; grid-template-columns: 3fr 2fr; gap: 2rem; align-items: center; align-content: center; }
+section[data-layout="image-right"] .col-left { overflow: hidden; min-width: 0; }
+section[data-layout="image-right"] .col-right { overflow: hidden; min-width: 0; display: flex; align-items: center; justify-content: center; }
+section[data-layout="image-right"] .col-right img { max-height: 100%; max-width: 100%; object-fit: contain; margin: 0; }
+
+section[data-layout="fact"] { text-align: center; justify-content: center; align-items: center; }
+section[data-layout="fact"] h1 { font-size: 3rem; font-weight: 800; margin-bottom: 1rem; }
+section[data-layout="fact"] p { font-size: 1.5rem; opacity: 0.8; }
+section[data-layout="fact"] blockquote { border: none; font-style: italic; padding: 0; margin: 0; font-size: 1.75rem; }
 ${customCss}
 .lumislate-hover { background: rgba(96, 165, 250, 0.12); cursor: text; border-radius: 2px; transition: background 0.15s ease; }
 .lumislate-editing { outline: none; border: none; border-radius: 0; background: transparent; cursor: text; caret-color: currentColor; }
@@ -993,6 +1073,8 @@ ${slidesHtml}
 </script>
 </body>
 </html>`;
+
+	return { html, slideCount: slides.length };
 }
 
 /** 生成 AI 渲染加载/思考中的过渡页面 */
@@ -1111,13 +1193,22 @@ body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: #e2e8f0;
 }
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.12;
+  pointer-events: none;
+  animation: orbFloat var(--orb-duration, 6s) ease-in-out infinite;
+}
 .welcome {
   text-align: center;
-  animation: fadeIn 0.8s ease-out;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2rem;
+  position: relative;
+  z-index: 1;
 }
 .logo-area {
   display: flex;
@@ -1187,25 +1278,57 @@ body {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(12px); }
+/* Entrance animations */
+.anim-fade-up {
+  opacity: 0;
+  animation: fadeUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.anim-pop-in {
+  opacity: 0;
+  animation: popIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+.delay-1 { animation-delay: 0.15s; }
+.delay-2 { animation-delay: 0.35s; }
+.delay-3 { animation-delay: 0.55s; }
+.delay-4 { animation-delay: 0.7s; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(25px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(35px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes orbFloat {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(var(--orb-dx, 10px), var(--orb-dy, -15px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-up, .anim-pop-in, .bg-orb {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  * { transition: none !important; }
 }
 </style>
 </head>
 <body>
+<div class="bg-orb" style="--orb-duration:7s;--orb-dx:20px;--orb-dy:-15px;width:300px;height:300px;background:#6366f1;top:10%;left:10%"></div>
+<div class="bg-orb" style="--orb-duration:8s;--orb-dx:-15px;--orb-dy:20px;width:250px;height:250px;background:#8b5cf6;bottom:15%;right:10%"></div>
+<div class="bg-orb" style="--orb-duration:6s;--orb-dx:10px;--orb-dy:10px;width:200px;height:200px;background:#06b6d4;top:50%;left:60%"></div>
 <div class="welcome">
   <div class="logo-area">
-    <h1>LumiSlate</h1>
-    <div class="subtitle">选择 Markdown 笔记，开始编译高定画布</div>
+    <h1 class="anim-fade-up delay-1">LumiSlate</h1>
+    <div class="subtitle anim-fade-up delay-2">选择 Markdown 笔记，开始编译高定画布</div>
   </div>
   <div class="mode-buttons">
-    <div class="mode-btn" data-mode="custom" onclick="selectMode('custom')">
+    <div class="mode-btn anim-pop-in delay-3" data-mode="custom" onclick="selectMode('custom')">
       <div class="tooltip">将 Markdown 转换为幻灯片 / 长文画布<br>支持自定义 CSS 与实时预览</div>
       <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></div>
       <div class="label">自定义模式</div>
     </div>
-    <div class="mode-btn" data-mode="design" onclick="selectMode('design')">
+    <div class="mode-btn anim-pop-in delay-4" data-mode="design" onclick="selectMode('design')">
       <div class="tooltip">选择设计风格，由 AI 自动生成精美 HTML 页面<br>支持多种排版模板与实时编辑<br><span style="color:#f59e0b">首次使用需要进入设置配置AI功能</span></div>
       <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3z"/></svg></div>
       <div class="label">AI模式</div>
@@ -1221,7 +1344,7 @@ function selectMode(mode) {
 </html>`;
 }
 
-/** 获取 Lucide 图标的 SVG 字符串（用于 iframe 内联） */
+/** 获取 Lucide 图标的 SVG 字符串（用于 iframe 内联） *//** 获取 Lucide 图标的 SVG 字符串（用于 iframe 内联） */
 function getSkillIconSvg(iconName: string): string {
 	const el = document.createElement('div');
 	setIcon(el, iconName);
@@ -2126,6 +2249,177 @@ function getImageInteractionScript(): string {
 	var isResizing = false;
 	var dragStart = { x: 0, y: 0, tx: 0, ty: 0 };
 	var resizeStart = { x: 0, y: 0, w: 0, h: 0, handle: '' };
+	var rafId = null;
+	var pendingMouseX = 0;
+	var pendingMouseY = 0;
+	var needsUpdate = false;
+	var alignLineH = null;
+	var alignLineV = null;
+	var ALIGN_THRESHOLD = 6;
+
+	function scheduleUpdate() {
+		if (needsUpdate) return;
+		needsUpdate = true;
+		rafId = requestAnimationFrame(flushUpdate);
+	}
+
+	function createAlignLine(type) {
+		var el = document.createElement('div');
+		el.className = 'lumislate-align-line lumislate-align-line-' + type;
+		if (type === 'h') {
+			el.style.cssText = 'position:fixed;left:0;width:100%;height:1px;z-index:9997;background:rgba(59,130,246,0.75);pointer-events:none;display:none;';
+		} else {
+			el.style.cssText = 'position:fixed;top:0;width:1px;height:100%;z-index:9997;background:rgba(59,130,246,0.75);pointer-events:none;display:none;';
+		}
+		document.body.appendChild(el);
+		return el;
+	}
+
+	function showAlignLine(type, pos) {
+		if (type === 'h') {
+			if (!alignLineH) alignLineH = createAlignLine('h');
+			alignLineH.style.top = pos + 'px';
+			alignLineH.style.display = 'block';
+		} else {
+			if (!alignLineV) alignLineV = createAlignLine('v');
+			alignLineV.style.left = pos + 'px';
+			alignLineV.style.display = 'block';
+		}
+	}
+
+	function hideAlignLines() {
+		if (alignLineH) alignLineH.style.display = 'none';
+		if (alignLineV) alignLineV.style.display = 'none';
+	}
+
+	/** 计算吸附位置和辅助线 */
+	function computeSnap(img, tx, ty) {
+		var container = getConstraintContainer(img);
+		var iRect = img.getBoundingClientRect();
+		var cur = getTransformValues(img);
+		var predLeft = (iRect.left - cur.x) + tx;
+		var predTop = (iRect.top - cur.y) + ty;
+		var predRight = predLeft + iRect.width;
+		var predBottom = predTop + iRect.height;
+		var predCenterX = predLeft + iRect.width / 2;
+		var predCenterY = predTop + iRect.height / 2;
+
+		var snapX = null, snapY = null;
+		var lineX = null, lineY = null;
+
+		// 收集容器内所有其他图片的边界（含 transform 后的最终位置）
+		var allImgs = container.querySelectorAll('img');
+		for (var i = 0; i < allImgs.length; i++) {
+			var other = allImgs[i];
+			if (other === img) continue;
+			var oRect = other.getBoundingClientRect();
+			var oLeft = oRect.left, oTop = oRect.top;
+			var oRight = oRect.right, oBottom = oRect.bottom;
+			var oCenterX = oLeft + oRect.width / 2;
+			var oCenterY = oTop + oRect.height / 2;
+
+			// 水平方向吸附（垂直辅助线）：比较 left/center/right
+			if (snapX === null) {
+				var hTargets = [
+					{ pred: predLeft, ref: oLeft },
+					{ pred: predLeft, ref: oCenterX },
+					{ pred: predLeft, ref: oRight },
+					{ pred: predCenterX, ref: oLeft },
+					{ pred: predCenterX, ref: oCenterX },
+					{ pred: predCenterX, ref: oRight },
+					{ pred: predRight, ref: oLeft },
+					{ pred: predRight, ref: oCenterX },
+					{ pred: predRight, ref: oRight },
+				];
+				for (var j = 0; j < hTargets.length; j++) {
+					var diff = hTargets[j].pred - hTargets[j].ref;
+					if (Math.abs(diff) < ALIGN_THRESHOLD) {
+						snapX = tx - diff;
+						lineX = hTargets[j].ref;
+						break;
+					}
+				}
+			}
+
+			// 垂直方向吸附（水平辅助线）：比较 top/center/bottom
+			if (snapY === null) {
+				var vTargets = [
+					{ pred: predTop, ref: oTop },
+					{ pred: predTop, ref: oCenterY },
+					{ pred: predTop, ref: oBottom },
+					{ pred: predCenterY, ref: oTop },
+					{ pred: predCenterY, ref: oCenterY },
+					{ pred: predCenterY, ref: oBottom },
+					{ pred: predBottom, ref: oTop },
+					{ pred: predBottom, ref: oCenterY },
+					{ pred: predBottom, ref: oBottom },
+				];
+				for (var j = 0; j < vTargets.length; j++) {
+					var diff = vTargets[j].pred - vTargets[j].ref;
+					if (Math.abs(diff) < ALIGN_THRESHOLD) {
+						snapY = ty - diff;
+						lineY = vTargets[j].ref;
+						break;
+					}
+				}
+			}
+
+			if (snapX !== null && snapY !== null) break;
+		}
+
+		return { x: snapX !== null ? snapX : tx, y: snapY !== null ? snapY : ty, lineX: lineX, lineY: lineY };
+	}
+
+	function flushUpdate() {
+		needsUpdate = false;
+		rafId = null;
+		if (!activeImage) return;
+		if (isDragging) {
+			var dx = pendingMouseX - dragStart.x;
+			var dy = pendingMouseY - dragStart.y;
+			var rawTx = dragStart.tx + dx;
+			var rawTy = dragStart.ty + dy;
+			var snap = computeSnap(activeImage, rawTx, rawTy);
+			var constrained = constrainTranslate(activeImage, snap.x, snap.y);
+			activeImage.style.transform = 'translate(' + constrained.x + 'px, ' + constrained.y + 'px)';
+			if (snap.lineX !== null) showAlignLine('v', snap.lineX);
+			else if (alignLineV) alignLineV.style.display = 'none';
+			if (snap.lineY !== null) showAlignLine('h', snap.lineY);
+			else if (alignLineH) alignLineH.style.display = 'none';
+			updateHandlesPosition();
+		} else if (isResizing) {
+			var dx = pendingMouseX - resizeStart.x;
+			var dy = pendingMouseY - resizeStart.y;
+			var aspect = resizeStart.w / resizeStart.h;
+			var handle = resizeStart.handle;
+			var newW, newH;
+			if (handle === 'n' || handle === 's') {
+				newH = resizeStart.h + (handle === 's' ? dy : -dy);
+				newW = newH * aspect;
+			} else if (handle === 'e' || handle === 'w') {
+				newW = resizeStart.w + (handle === 'e' ? dx : -dx);
+				newH = newW / aspect;
+			} else {
+				var ddx = (handle.indexOf('e') !== -1) ? dx : -dx;
+				var ddy = (handle.indexOf('s') !== -1) ? dy : -dy;
+				if (Math.abs(ddx) >= Math.abs(ddy)) {
+					newW = resizeStart.w + ddx;
+					newH = newW / aspect;
+				} else {
+					newH = resizeStart.h + ddy;
+					newW = newH * aspect;
+				}
+			}
+			var constrained = constrainResize(activeImage, newW, newH, aspect);
+			var rw = Math.round(constrained.w) + 'px';
+			var rh = Math.round(constrained.h) + 'px';
+			activeImage.style.width = rw;
+			activeImage.style.height = rh;
+			activeImage.style.maxWidth = rw;
+			activeImage.style.maxHeight = rh;
+			updateHandlesPosition();
+		}
+	}
 
 	function getTransformValues(el) {
 		var style = window.getComputedStyle(el).transform;
@@ -2245,6 +2539,7 @@ function getImageInteractionScript(): string {
 		activeImage = img;
 		img.classList.remove('lumislate-img-hover');
 		img.classList.add('lumislate-img-active');
+		img.style.willChange = 'transform';
 
 		var computedPos = window.getComputedStyle(img).position;
 		if (computedPos === 'static') {
@@ -2260,17 +2555,109 @@ function getImageInteractionScript(): string {
 		if (!activeImage) return;
 		activeImage.classList.remove('lumislate-img-active');
 		activeImage.classList.remove('lumislate-img-hover');
+		activeImage.style.willChange = '';
 		activeImage = null;
 		if (handlesContainer) handlesContainer.style.display = 'none';
 		if (dragOverlay) dragOverlay.style.display = 'none';
 		isDragging = false;
 		isResizing = false;
+		if (rafId) {
+			cancelAnimationFrame(rafId);
+			rafId = null;
+		}
+		needsUpdate = false;
+		hideAlignLines();
 	}
+
+	// ========== 右键菜单：替换图片 ==========
+	var contextMenuEl = null;
+	var contextMenuTargetImg = null;
+
+	function createContextMenu() {
+		if (contextMenuEl) return;
+		contextMenuEl = document.createElement('div');
+		contextMenuEl.className = 'lumislate-img-contextmenu';
+		contextMenuEl.style.cssText = 'position:fixed;z-index:10000;display:none;background:var(--background-primary,#fff);border:1px solid var(--background-modifier-border,#ddd);border-radius:6px;padding:4px 0;box-shadow:0 4px 12px rgba(0,0,0,0.15);min-width:140px;font-size:13px;';
+
+		var replaceItem = document.createElement('div');
+		replaceItem.className = 'lumislate-img-menuitem';
+		replaceItem.textContent = '替换图片';
+		replaceItem.style.cssText = 'padding:6px 14px;cursor:pointer;color:var(--text-normal);transition:background 0.1s;';
+		replaceItem.addEventListener('mouseenter', function() { this.style.background = 'var(--background-modifier-hover)'; });
+		replaceItem.addEventListener('mouseleave', function() { this.style.background = ''; });
+		replaceItem.addEventListener('click', function(e) {
+			e.stopPropagation();
+			if (contextMenuTargetImg) {
+				window.parent.postMessage({
+					type: 'lumislate-replace-image',
+					oldSrc: contextMenuTargetImg.src,
+					alt: contextMenuTargetImg.alt || ''
+				}, '*');
+			}
+			hideContextMenu();
+		});
+		contextMenuEl.appendChild(replaceItem);
+		document.body.appendChild(contextMenuEl);
+	}
+
+	function showContextMenu(x, y, img) {
+		createContextMenu();
+		contextMenuTargetImg = img;
+		contextMenuEl.style.left = x + 'px';
+		contextMenuEl.style.top = y + 'px';
+		contextMenuEl.style.display = 'block';
+	}
+
+	function hideContextMenu() {
+		if (contextMenuEl) contextMenuEl.style.display = 'none';
+		contextMenuTargetImg = null;
+	}
+
+	document.addEventListener('contextmenu', function(e) {
+		var img = e.target.closest('img');
+		if (img) {
+			e.preventDefault();
+			showContextMenu(e.clientX, e.clientY, img);
+			return;
+		}
+		hideContextMenu();
+	}, true);
+
+	document.addEventListener('click', function(e) {
+		if (contextMenuEl && !contextMenuEl.contains(e.target)) {
+			hideContextMenu();
+		}
+	}, true);
 
 	// 注入样式
 	var style = document.createElement('style');
-	style.textContent = '.lumislate-img-hover{outline:2px dashed #3b82f6;outline-offset:2px;cursor:grab;} .lumislate-img-active{outline:2px solid #3b82f6;outline-offset:2px;cursor:grab;} .lumislate-img-handles{position:fixed;z-index:9999;display:none;pointer-events:none;} .lumislate-handle:hover{background:#60a5fa;transform:scale(1.2);}';
+	style.textContent = '.lumislate-img-hover{outline:2px dashed #3b82f6;outline-offset:2px;cursor:grab;} .lumislate-img-active{outline:2px solid #3b82f6;outline-offset:2px;cursor:grab;} .lumislate-img-handles{position:fixed;z-index:9999;display:none;pointer-events:none;} .lumislate-handle:hover{background:#60a5fa;transform:scale(1.2);} .lumislate-img-error{position:relative;display:inline-block;min-width:120px;min-height:80px;background:rgba(239,68,68,0.08);border:1px dashed rgba(239,68,68,0.4);border-radius:6px;} .lumislate-img-error::after{content:attr(data-src);position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11px;color:rgba(239,68,68,0.8);word-break:break-all;padding:8px;text-align:center;max-width:100%;}';
 	document.head.appendChild(style);
+		// 图片加载错误处理：加载失败时显示原始路径提示
+		function onImgError(e) {
+			var img = e.target;
+			if (img.classList.contains('lumislate-img-error')) return;
+			img.classList.add('lumislate-img-error');
+			img.setAttribute('data-src', img.src || img.alt || '未知图片');
+			img.style.opacity = '0.15';
+		}
+		document.querySelectorAll('img').forEach(function(img) {
+			if (!img.complete || img.naturalWidth === 0) {
+				img.addEventListener('error', onImgError);
+			}
+		});
+		new MutationObserver(function(mutations) {
+			mutations.forEach(function(m) {
+				m.addedNodes.forEach(function(n) {
+					if (n.nodeType === 1) {
+						if (n.tagName === 'IMG') n.addEventListener('error', onImgError);
+						if (n.querySelectorAll) n.querySelectorAll('img').forEach(function(img) {
+							img.addEventListener('error', onImgError);
+						});
+					}
+				});
+			});
+		}).observe(document.body, { childList: true, subtree: true });
 
 	// mouseover: 给图片添加 hover 效果
 	document.body.addEventListener('mouseover', function(e) {
@@ -2345,57 +2732,13 @@ function getImageInteractionScript(): string {
 		}
 	}, true);
 
-	// mousemove: 拖拽或调整大小中
+	// mousemove: 缓存坐标，由 rAF 批量更新视觉状态
 	document.body.addEventListener('mousemove', function(e) {
-		if (isDragging && activeImage) {
-			var dx = e.clientX - dragStart.x;
-			var dy = e.clientY - dragStart.y;
-			var rawTx = dragStart.tx + dx;
-			var rawTy = dragStart.ty + dy;
-			var constrained = constrainTranslate(activeImage, rawTx, rawTy);
-			activeImage.style.transform = 'translate(' + constrained.x + 'px, ' + constrained.y + 'px)';
-			updateHandlesPosition();
-			return;
-		}
-
-		if (isResizing && activeImage) {
-			var dx = e.clientX - resizeStart.x;
-			var dy = e.clientY - resizeStart.y;
-			var aspect = resizeStart.w / resizeStart.h;
-			var handle = resizeStart.handle;
-			var newW, newH;
-
-			// 强制等比例 resize：根据手柄方向选择基准轴
-			if (handle === 'n' || handle === 's') {
-				// 垂直手柄：以高度变化为准
-				newH = resizeStart.h + (handle === 's' ? dy : -dy);
-				newW = newH * aspect;
-			} else if (handle === 'e' || handle === 'w') {
-				// 水平手柄：以宽度变化为准
-				newW = resizeStart.w + (handle === 'e' ? dx : -dx);
-				newH = newW / aspect;
-			} else {
-				// 角点：取鼠标移动绝对值较大的方向为基准
-				var ddx = (handle.indexOf('e') !== -1) ? dx : -dx;
-				var ddy = (handle.indexOf('s') !== -1) ? dy : -dy;
-				if (Math.abs(ddx) >= Math.abs(ddy)) {
-					newW = resizeStart.w + ddx;
-					newH = newW / aspect;
-				} else {
-					newH = resizeStart.h + ddy;
-					newW = newH * aspect;
-				}
-			}
-
-			var constrained = constrainResize(activeImage, newW, newH, aspect);
-			var rw = Math.round(constrained.w) + 'px';
-			var rh = Math.round(constrained.h) + 'px';
-			activeImage.style.width = rw;
-			activeImage.style.height = rh;
-			activeImage.style.maxWidth = rw;
-			activeImage.style.maxHeight = rh;
-			updateHandlesPosition();
-		}
+		if (!isDragging && !isResizing) return;
+		if (!activeImage) return;
+		pendingMouseX = e.clientX;
+		pendingMouseY = e.clientY;
+		scheduleUpdate();
 	}, true);
 
 	// mouseup: 结束操作
@@ -2404,6 +2747,7 @@ function getImageInteractionScript(): string {
 			isDragging = false;
 			if (activeImage) activeImage.style.cursor = 'grab';
 			if (dragOverlay) dragOverlay.style.display = 'none';
+			hideAlignLines();
 		}
 		if (isResizing) {
 			isResizing = false;
@@ -2469,14 +2813,48 @@ export interface RunStats {
 	skillName?: string;
 }
 
-/** 自定义模式可用的幻灯片版式 */
+/** 自定义模式可用的幻灯片版式（icon 为内联 SVG 字符串） */
 export const SLIDE_LAYOUTS = [
-	{ id: 'default', name: '标准页', icon: 'file-text' },
-	{ id: 'cover', name: '封面', icon: 'image' },
-	{ id: 'center', name: '居中', icon: 'align-center' },
-	{ id: 'two-cols', name: '双栏', icon: 'columns-2' },
-	{ id: 'statement', name: '金句', icon: 'quote' },
-	{ id: 'section', name: '章节', icon: 'heading-1' },
+	{
+		id: 'default', name: '标准页',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="15" y2="13"/><line x1="7" y1="17" x2="12" y2="17"/></svg>',
+	},
+	{
+		id: 'cover', name: '封面',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="9" x2="17" y2="9" stroke-width="2"/><line x1="7" y1="14" x2="14" y2="14"/></svg>',
+	},
+	{
+		id: 'center', name: '居中',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="7" y="8" width="10" height="8" rx="1"/></svg>',
+	},
+	{
+		id: 'two-cols', name: '双栏',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/></svg>',
+	},
+	{
+		id: 'two-cols-header', name: '双栏带头',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="12" y1="9" x2="12" y2="20"/></svg>',
+	},
+	{
+		id: 'image-left', name: '左图右文',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="6" y="7" width="6" height="10" rx="1"/><line x1="15" y1="9" x2="18" y2="9"/><line x1="15" y1="13" x2="18" y2="13"/></svg>',
+	},
+	{
+		id: 'image-right', name: '左文右图',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="6" y1="9" x2="9" y2="9"/><line x1="6" y1="13" x2="9" y2="13"/><rect x="12" y="7" width="6" height="10" rx="1"/></svg>',
+	},
+	{
+		id: 'statement', name: '金句',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 14c-1.5 0-2.5-1-2.5-2.5S6.5 9 8 9"/><path d="M13 14c-1.5 0-2.5-1-2.5-2.5S11.5 9 13 9"/></svg>',
+	},
+	{
+		id: 'section', name: '章节',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="10" x2="17" y2="10" stroke-width="2"/><line x1="7" y1="15" x2="13" y2="15"/></svg>',
+	},
+	{
+		id: 'fact', name: '高亮',
+		icon: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="7" y="8" width="10" height="8" rx="1" stroke-width="2"/></svg>',
+	},
 ];
 
 export class LumiSlateView extends ItemView {
@@ -2505,6 +2883,14 @@ export class LumiSlateView extends ItemView {
 	private statusFileEl: HTMLElement | null = null;
 	private statusAgentEl: HTMLElement | null = null;
 
+	// 底部导航控件
+	private navControlsEl: HTMLElement | null = null;
+	private navPrevBtn: HTMLButtonElement | null = null;
+	private navNextBtn: HTMLButtonElement | null = null;
+	private navPageNumEl: HTMLElement | null = null;
+	private navGotoInput: HTMLInputElement | null = null;
+	private navGotoBackdrop: HTMLElement | null = null;
+
 	// 内部状态
 	private _isRendering = false;
 	private _hasCache = false;
@@ -2514,6 +2900,7 @@ export class LumiSlateView extends ItemView {
 	private _currentFileName: string | null = null;
 	private _selectedSkillId: string = SKILLS[0]?.id || '';
 	private _currentSlideIndex: number = 0;
+	private _totalSlides: number = 0;
 
 	onModeChange: ((mode: Mode) => void) | null = null;
 	onSkillChange: ((skillId: string) => void) | null = null;
@@ -2527,6 +2914,8 @@ export class LumiSlateView extends ItemView {
 	onSaveHtml: (() => void) | null = null;
 	onGoHome: (() => void) | null = null;
 	onClearCache: (() => void) | null = null;
+	onNavSlideChange: ((slideIndex: number) => void) | null = null;
+	onAddImage: (() => void) | null = null;
 
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
@@ -2611,6 +3000,17 @@ export class LumiSlateView extends ItemView {
 		// 底部状态栏
 		this.statusBarEl = container.createEl('div', { cls: 'lumislate-status-bar' });
 		this.buildStatusBar(this.statusBarEl);
+
+		// 键盘导航（← → 切换幻灯片）
+		this.containerEl.addEventListener('keydown', (e) => {
+			if (e.key === 'ArrowLeft') {
+				e.preventDefault();
+				this.goToPrevSlide();
+			} else if (e.key === 'ArrowRight') {
+				e.preventDefault();
+				this.goToNextSlide();
+			}
+		});
 	}
 
 	async onClose(): Promise<void> {
@@ -2636,6 +3036,14 @@ export class LumiSlateView extends ItemView {
 		this.layoutBtn = null;
 		this.saveBtn = null;
 		this.clearCacheBtn = null;
+		this.closeLayoutPicker();
+		this.closeGotoInput();
+		this.navControlsEl = null;
+		this.navPrevBtn = null;
+		this.navNextBtn = null;
+		this.navPageNumEl = null;
+		this.navGotoInput = null;
+		this.navGotoBackdrop = null;
 	}
 
 	// ============ 工具栏 ============
@@ -2666,6 +3074,22 @@ export class LumiSlateView extends ItemView {
 		const right = el.createEl('div', { cls: 'lumislate-status-right' });
 		this.statusAgentEl = right.createEl('span', { cls: 'lumislate-status-item lumislate-status-agent' });
 		this.statusAgentEl.textContent = 'Agent：未配置';
+
+		// 导航控件（仅在有分页时显示）
+		this.navControlsEl = right.createEl('div', { cls: 'lumislate-nav-controls' });
+		this.navControlsEl.style.display = 'none';
+
+		this.navPrevBtn = this.navControlsEl.createEl('button', { cls: 'lumislate-nav-btn lumislate-nav-prev', attr: { title: '上一页 (←)' } });
+		this.navPrevBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>';
+		this.navPrevBtn.addEventListener('click', () => this.goToPrevSlide());
+
+		this.navPageNumEl = this.navControlsEl.createEl('span', { cls: 'lumislate-nav-page-num', attr: { title: '点击跳转' } });
+		this.navPageNumEl.textContent = '1 / 1';
+		this.navPageNumEl.addEventListener('click', () => this.showGotoInput());
+
+		this.navNextBtn = this.navControlsEl.createEl('button', { cls: 'lumislate-nav-btn lumislate-nav-next', attr: { title: '下一页 (→)' } });
+		this.navNextBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+		this.navNextBtn.addEventListener('click', () => this.goToNextSlide());
 	}
 
 	/** 更新底部状态栏信息 */
@@ -2679,6 +3103,125 @@ export class LumiSlateView extends ItemView {
 		}
 	}
 
+	// ============ 底部导航控件 ============
+
+	/** 设置幻灯片总数并更新导航控件显示 */
+	setTotalSlides(total: number): void {
+		this._totalSlides = total;
+		if (this.navControlsEl) {
+			this.navControlsEl.style.display = (total > 1) ? 'flex' : 'none';
+		}
+		this.updateNavControls();
+	}
+
+	/** 更新导航控件状态（页码、按钮 disabled） */
+	updateNavControls(): void {
+		if (this.navPageNumEl) {
+			this.navPageNumEl.textContent = `${this._currentSlideIndex + 1} / ${this._totalSlides}`;
+		}
+		if (this.navPrevBtn) {
+			this.navPrevBtn.disabled = this._currentSlideIndex <= 0;
+			this.navPrevBtn.style.opacity = this._currentSlideIndex <= 0 ? '0.35' : '1';
+		}
+		if (this.navNextBtn) {
+			this.navNextBtn.disabled = this._currentSlideIndex >= this._totalSlides - 1;
+			this.navNextBtn.style.opacity = this._currentSlideIndex >= this._totalSlides - 1 ? '0.35' : '1';
+		}
+	}
+
+	/** 跳转到上一页 */
+	goToPrevSlide(): void {
+		if (this._currentSlideIndex > 0) {
+			const idx = this._currentSlideIndex - 1;
+			this.scrollToSlide(idx);
+			this.setCurrentSlideIndex(idx);
+			this.updateNavControls();
+			this.onNavSlideChange?.(idx);
+		}
+	}
+
+	/** 跳转到下一页 */
+	goToNextSlide(): void {
+		if (this._currentSlideIndex < this._totalSlides - 1) {
+			const idx = this._currentSlideIndex + 1;
+			this.scrollToSlide(idx);
+			this.setCurrentSlideIndex(idx);
+			this.updateNavControls();
+			this.onNavSlideChange?.(idx);
+		}
+	}
+
+	/** 显示页码跳转输入框 */
+	private showGotoInput(): void {
+		if (this.navGotoInput || this._totalSlides <= 1) return;
+
+		// 遮罩层
+		const backdrop = document.createElement('div');
+		backdrop.className = 'lumislate-goto-backdrop';
+		backdrop.addEventListener('click', () => this.closeGotoInput());
+		document.body.appendChild(backdrop);
+		this.navGotoBackdrop = backdrop;
+
+		// 输入框
+		const input = document.createElement('input');
+		input.type = 'number';
+		input.min = '1';
+		input.max = String(this._totalSlides);
+		input.className = 'lumislate-goto-input';
+		input.placeholder = `1-${this._totalSlides}`;
+		input.value = String(this._currentSlideIndex + 1);
+
+		// 定位到页码元素下方
+		if (this.navPageNumEl) {
+			const rect = this.navPageNumEl.getBoundingClientRect();
+			input.style.position = 'fixed';
+			input.style.top = `${rect.bottom + 6}px`;
+			input.style.left = `${rect.left + rect.width / 2}px`;
+			input.style.transform = 'translateX(-50%)';
+			input.style.zIndex = '1001';
+		}
+
+		input.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter') {
+				const val = parseInt(input.value, 10);
+				if (!isNaN(val) && val >= 1 && val <= this._totalSlides) {
+					const idx = val - 1;
+					this.scrollToSlide(idx);
+					this.setCurrentSlideIndex(idx);
+					this.updateNavControls();
+					this.closeGotoInput();
+					this.onNavSlideChange?.(idx);
+				} else {
+					input.style.borderColor = 'var(--text-error)';
+				}
+			} else if (e.key === 'Escape') {
+				this.closeGotoInput();
+			}
+		});
+
+		input.addEventListener('blur', () => {
+			// 延迟关闭，让 click 事件先处理
+			setTimeout(() => this.closeGotoInput(), 150);
+		});
+
+		document.body.appendChild(input);
+		this.navGotoInput = input;
+		input.focus();
+		input.select();
+	}
+
+	/** 关闭页码跳转输入框 */
+	private closeGotoInput(): void {
+		if (this.navGotoInput) {
+			this.navGotoInput.remove();
+			this.navGotoInput = null;
+		}
+		if (this.navGotoBackdrop) {
+			this.navGotoBackdrop.remove();
+			this.navGotoBackdrop = null;
+		}
+	}
+
 	// ============ 操作按钮（已合并到顶部工具栏） ============
 
 	private buildCustomActions(container: HTMLElement): void {
@@ -2686,8 +3229,12 @@ export class LumiSlateView extends ItemView {
 		this.customSizeSelect = container.createEl('select', { cls: 'lumislate-skill-select' });
 		const sizes = [
 			{ label: '16:9', value: '16:9' },
+			{ label: '16:10', value: '16:10' },
 			{ label: '4:3', value: '4:3' },
+			{ label: '3:2', value: '3:2' },
 			{ label: '1:1', value: '1:1' },
+			{ label: '21:9', value: '21:9' },
+			{ label: '9:16', value: '9:16' },
 		];
 		for (const s of sizes) {
 			this.customSizeSelect.createEl('option', { text: s.label, value: s.value });
@@ -2698,8 +3245,7 @@ export class LumiSlateView extends ItemView {
 
 		// 版式选择按钮（点击弹出菜单）
 		this.layoutBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
-		setIcon(this.layoutBtn.createSpan(), 'layout');
-		this.layoutBtn.appendText(' 版式');
+		this.setLayoutSelectValue('default');
 		this.layoutBtn.addEventListener('click', (evt) => this.showLayoutMenu(evt));
 
 		// 保存 HTML 按钮
@@ -2707,6 +3253,12 @@ export class LumiSlateView extends ItemView {
 		setIcon(this.saveBtn.createSpan(), 'save');
 		this.saveBtn.appendText(' 保存');
 		this.saveBtn.addEventListener('click', () => this.onSaveHtml?.());
+
+		// 添加图片按钮
+		const addImgBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
+		setIcon(addImgBtn.createSpan(), 'image-plus');
+		addImgBtn.appendText(' 添加图片');
+		addImgBtn.addEventListener('click', () => this.onAddImage?.());
 
 		this.customCssBtn = container.createEl('button', { cls: 'lumislate-btn lumislate-btn-ghost' });
 		setIcon(this.customCssBtn.createSpan(), 'palette');
@@ -2783,32 +3335,111 @@ export class LumiSlateView extends ItemView {
 
 	setCurrentSlideIndex(index: number): void {
 		this._currentSlideIndex = index;
+		this.updateNavControls();
 	}
 
 	getCurrentSlideIndex(): number {
 		return this._currentSlideIndex;
 	}
 
-	/** 同步版式按钮的显示文本 */
+	/** 同步版式按钮的显示文本与 SVG 图标 */
 	setLayoutSelectValue(value: string): void {
 		if (!this.layoutBtn) return;
 		const layout = SLIDE_LAYOUTS.find(l => l.id === value);
 		this.layoutBtn.empty();
-		setIcon(this.layoutBtn.createSpan(), layout?.icon || 'layout');
+		const iconWrap = this.layoutBtn.createSpan({ cls: 'lumislate-layout-btn-icon' });
+		iconWrap.innerHTML = layout?.icon || '';
 		this.layoutBtn.appendText(` ${layout?.name || '版式'}`);
 	}
 
-	/** 显示版式选择菜单 */
-	showLayoutMenu(evt: MouseEvent): void {
-		const menu = new Menu();
-		for (const layout of SLIDE_LAYOUTS) {
-			menu.addItem((item) => {
-				item.setTitle(layout.name)
-					.setIcon(layout.icon)
-					.onClick(() => this.onSlideLayoutChange?.(layout.id));
-			});
+	private layoutPickerEl: HTMLElement | null = null;
+
+	/** 显示版式选择网格面板（Slidev 风格 SVG 图标矩阵） */
+	showLayoutMenu(_evt: MouseEvent): void {
+		if (this.layoutPickerEl) {
+			this.closeLayoutPicker();
+			return;
 		}
-		menu.showAtMouseEvent(evt);
+
+		const currentLayoutId = SLIDE_LAYOUTS.find(l => {
+			if (!this.layoutBtn) return false;
+			return this.layoutBtn.textContent?.includes(l.name);
+		})?.id || 'default';
+
+		// 创建遮罩层（点击外部关闭）
+		const backdrop = document.createElement('div');
+		backdrop.className = 'lumislate-layout-picker-backdrop';
+		backdrop.addEventListener('click', () => this.closeLayoutPicker());
+
+		// 创建面板
+		const panel = document.createElement('div');
+		panel.className = 'lumislate-layout-picker';
+
+		const header = document.createElement('div');
+		header.className = 'lumislate-layout-picker-header';
+		header.textContent = '选择版式';
+		panel.appendChild(header);
+
+		const grid = document.createElement('div');
+		grid.className = 'lumislate-layout-grid';
+
+		for (const layout of SLIDE_LAYOUTS) {
+			const item = document.createElement('div');
+			item.className = 'lumislate-layout-item';
+			if (layout.id === currentLayoutId) {
+				item.classList.add('active');
+			}
+			item.setAttribute('data-layout-id', layout.id);
+			item.setAttribute('title', layout.name);
+
+			const svgWrap = document.createElement('div');
+			svgWrap.className = 'lumislate-layout-item-icon';
+			svgWrap.innerHTML = layout.icon;
+
+			const label = document.createElement('span');
+			label.className = 'lumislate-layout-item-label';
+			label.textContent = layout.name;
+
+			item.appendChild(svgWrap);
+			item.appendChild(label);
+
+			item.addEventListener('click', () => {
+				this.onSlideLayoutChange?.(layout.id);
+				this.closeLayoutPicker();
+			});
+
+			grid.appendChild(item);
+		}
+
+		panel.appendChild(grid);
+
+		// 定位到按钮下方
+		if (this.layoutBtn) {
+			const rect = this.layoutBtn.getBoundingClientRect();
+			panel.style.position = 'fixed';
+			panel.style.top = `${rect.bottom + 6}px`;
+			panel.style.right = `${window.innerWidth - rect.right}px`;
+			panel.style.zIndex = '1000';
+		}
+
+		this.layoutPickerEl = document.createElement('div');
+		this.layoutPickerEl.appendChild(backdrop);
+		this.layoutPickerEl.appendChild(panel);
+		document.body.appendChild(this.layoutPickerEl);
+
+		// ESC 关闭
+		const escHandler = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') this.closeLayoutPicker();
+		};
+		document.addEventListener('keydown', escHandler, { once: true });
+	}
+
+	/** 关闭版式选择器 */
+	closeLayoutPicker(): void {
+		if (this.layoutPickerEl) {
+			this.layoutPickerEl.remove();
+			this.layoutPickerEl = null;
+		}
 	}
 
 	/** 更新 Skill 选择按钮的显示文本和图标 */
@@ -3050,8 +3681,16 @@ export default class LumiSlatePlugin extends Plugin {
 				view.onCustomSizeChange = (size) => this.handleCustomSizeChange(size);
 				view.onCustomCss = () => this.showCustomCssModal();
 				view.onSlideLayoutChange = (layout) => this.applySlideLayout(layout);
+				view.onNavSlideChange = (idx) => {
+					const activeFile = this.app.workspace.getActiveFile();
+					if (activeFile) {
+						const layout = this.getSlideLayout(activeFile.path, idx);
+						view.setLayoutSelectValue(layout);
+					}
+				};
 				view.onGoHome = () => view.resetToWelcome();
 				view.onClearCache = () => this.handleClearLayout();
+				view.onAddImage = () => this.handleAddImage();
 				// 恢复上次选中的模式和 skill
 				view.setMode(this.settings.defaultMode);
 				view.setSelectedSkill(this.settings.defaultSkill);
@@ -3356,16 +3995,23 @@ export default class LumiSlatePlugin extends Plugin {
 
 		// 自定义模式：优先检查已保存的 HTML，再实时渲染
 		if (mode === "custom") {
-			// 渲染前记录当前光标所在的幻灯片索引（用于渲染后恢复位置）
-			const targetSlideIndex = this.getSlideIndexAtCursor();
+			// 渲染前记录当前查看的幻灯片索引（用于渲染后恢复位置）
+			// 优先使用 view 中保存的当前 slide（响应 iframe 点击），回退到编辑器光标位置
+			const targetSlideIndex = view.getCurrentSlideIndex() >= 0 ? view.getCurrentSlideIndex() : this.getSlideIndexAtCursor();
 
 			const { savedHtmlPath, hasConflict } = await this.checkSavedHtmlConflict(notePath);
+
+			// 计算 slide 数量（用于导航控件，无论走哪条路径都需要）
+			const { body } = extractFrontmatter(resolvedMarkdown);
+			const hasDividers = /^---\s*$/m.test(body);
+			const slideCount = hasDividers ? parseSlides(body).length || 1 : 1;
 
 			if (savedHtmlPath && !hasConflict) {
 				// 有保存的 HTML 且无冲突，直接加载
 				const savedHtml = await this.app.vault.adapter.read(savedHtmlPath).catch(() => null);
 				if (savedHtml) {
 					view.renderCanvas(savedHtml);
+					view.setTotalSlides(slideCount);
 					await this.refreshViewContext();
 					new Notice('已从保存的 HTML 恢复');
 					return;
@@ -3384,6 +4030,7 @@ export default class LumiSlatePlugin extends Plugin {
 					const savedHtml = await this.app.vault.adapter.read(savedHtmlPath).catch(() => null);
 					if (savedHtml) {
 						view.renderCanvas(savedHtml);
+						view.setTotalSlides(slideCount);
 						await this.refreshViewContext();
 						return;
 					}
@@ -3391,7 +4038,7 @@ export default class LumiSlatePlugin extends Plugin {
 				// 用户选择重新渲染，继续执行下面的渲染逻辑
 			}
 
-			const html = await buildCustomFallbackPage(
+			const { html } = await buildCustomFallbackPage(
 				resolvedMarkdown,
 				this.app,
 				this.manifest.dir,
@@ -3404,9 +4051,10 @@ export default class LumiSlatePlugin extends Plugin {
 			);
 			const injected = injectInteractionScripts(html);
 			view.renderCanvas(injected);
+			view.setTotalSlides(slideCount);
 
-			// 渲染完成后恢复幻灯片位置（延迟确保 iframe 已加载）
-			if (targetSlideIndex > 0) {
+			// 渲染完成后恢复幻灯片位置并同步版式按钮（延迟确保 iframe 已加载）
+			if (targetSlideIndex >= 0) {
 				window.setTimeout(() => {
 					view.scrollToSlide(targetSlideIndex);
 					view.setCurrentSlideIndex(targetSlideIndex);
@@ -3435,6 +4083,7 @@ export default class LumiSlatePlugin extends Plugin {
 
 		const injected = injectInteractionScripts(html);
 		view.renderCanvas(injected);
+		view.setTotalSlides(1); // Design 模式无分页，隐藏导航
 		await this.refreshViewContext();
 	}
 
@@ -4863,8 +5512,223 @@ ${contentPreview}
 				}
 				return;
 			}
+
+			if (event.data?.type === 'lumislate-replace-image') {
+				const view = this.getLumiSlateView();
+				if (!view || event.source !== view.getIframeWindow()) return;
+				const oldSrc = event.data.oldSrc as string;
+				const alt = event.data.alt as string;
+				this.openImagePicker(oldSrc, alt);
+				return;
+			}
 		};
 		window.addEventListener('message', this.reverseMappingHandler);
+	}
+
+	/** 打开图片选择器，替换指定图片 */
+	private openImagePicker(oldSrc: string, alt: string): void {
+		new ImagePickerModal(this.app, (file) => {
+			this.applyImageReplace(oldSrc, file, alt);
+		}).open();
+	}
+
+	/** 查找正在编辑指定文件的 MarkdownView（不依赖焦点） */
+	private findMarkdownEditorForFile(file: TFile): MarkdownView | null {
+		const leaves = this.app.workspace.getLeavesOfType('markdown');
+		for (const leaf of leaves) {
+			const view = leaf.view;
+			if (view instanceof MarkdownView && view.file?.path === file.path) {
+				return view;
+			}
+		}
+		// 回退：尝试任意激活的 MarkdownView
+		const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (active?.file?.path === file.path) {
+			return active;
+		}
+		return null;
+	}
+
+	/** 在 Markdown 中插入新图片到当前 slide */
+	private async handleAddImage(): Promise<void> {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile || activeFile.extension !== 'md') {
+			new Notice('请先打开一个 Markdown 笔记');
+			return;
+		}
+
+		const view = this.getLumiSlateView();
+		if (!view) {
+			new Notice('画布视图未就绪');
+			return;
+		}
+
+		const slideIndex = view.getCurrentSlideIndex();
+
+		new ImagePickerModal(this.app, async (file) => {
+			const mdView = this.findMarkdownEditorForFile(activeFile);
+			if (!mdView) {
+				new Notice('未找到 Markdown 编辑器，请确保左侧已打开对应的笔记');
+				return;
+			}
+
+			const editor = mdView.editor;
+			const content = editor.getValue();
+
+			// 提取 frontmatter
+			const { frontmatter, body } = extractFrontmatter(content);
+			const bodyStartOffset = frontmatter
+				? content.indexOf(body)
+				: 0;
+
+			// 计算插入偏移量
+			const insertOffset = this.findSlideInsertOffset(content, bodyStartOffset, slideIndex);
+			const insertPos = this.offsetToPos(content, insertOffset);
+
+			// 插入图片语法（前后留空行）
+			const imageSyntax = `\n![[${file.name}]]\n`;
+			editor.replaceRange(imageSyntax, insertPos);
+
+			new Notice(`已添加图片: ${file.name}`);
+
+			// 重新渲染
+			await this.renderCurrentNote();
+		}).open();
+	}
+
+	/** 计算指定 slide 在 markdown 中的插入偏移量 */
+	private findSlideInsertOffset(content: string, bodyStartOffset: number, targetSlideIndex: number): number {
+		const body = content.slice(bodyStartOffset);
+		const lines = body.split('\n');
+
+		let currentSlide = 0;
+		let lastContentLineEnd = 0;
+		let offset = 0;
+
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			const trimmed = line.trim();
+
+			if (trimmed === '---') {
+				if (currentSlide === targetSlideIndex) {
+					return bodyStartOffset + lastContentLineEnd;
+				}
+				currentSlide++;
+				lastContentLineEnd = offset + line.length;
+			} else if (trimmed !== '') {
+				lastContentLineEnd = offset + line.length;
+			}
+
+			offset += line.length + 1; // +1 for \n
+		}
+
+		// 最后一个 slide，在文件末尾插入
+		return content.length;
+	}
+
+	/** 偏移量转换为 {line, ch} */
+	private offsetToPos(content: string, offset: number): { line: number; ch: number } {
+		const prefix = content.slice(0, offset);
+		const lines = prefix.split('\n');
+		return {
+			line: lines.length - 1,
+			ch: lines[lines.length - 1].length,
+		};
+	}
+
+	/** 在 Markdown 中替换图片引用 */
+	private applyImageReplace(oldSrc: string, newFile: TFile, alt: string): void {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			new Notice('未找到当前笔记');
+			return;
+		}
+		const mdView = this.findMarkdownEditorForFile(activeFile);
+		if (!mdView) {
+			new Notice('未找到 Markdown 编辑器，请确保左侧已打开对应的笔记');
+			return;
+		}
+		const editor = mdView.editor;
+		const content = editor.getValue();
+
+		// 从 oldSrc 提取文件名（用于模糊匹配）
+		const oldFilename = oldSrc.split('/').pop()?.split('?')[0] || '';
+
+		// 构建替换后的语法
+		const newPath = this.app.vault.getResourcePath(newFile);
+		let matchIndex = -1;
+		let matchedText = '';
+
+		// 策略1: 精确匹配标准 markdown 中的 app:// 路径
+		// 例如: ![alt](app://local/.../old.png)
+		const exactPatterns = [
+			`![${alt}](${oldSrc})`,
+			`![${oldFilename}](${oldSrc})`,
+		];
+		for (const p of exactPatterns) {
+			const idx = content.indexOf(p);
+			if (idx !== -1) {
+				matchIndex = idx;
+				matchedText = p;
+				break;
+			}
+		}
+
+		// 策略2: 匹配 wiki 链接 ![[oldFilename]] 或 ![[oldFilename|width]]
+		if (matchIndex === -1 && oldFilename) {
+			const wikiPattern = `![[${oldFilename}`;
+			const wikiIdx = content.indexOf(wikiPattern);
+			if (wikiIdx !== -1) {
+				// 找到闭合的 ]]
+				const endIdx = content.indexOf(']]', wikiIdx);
+				if (endIdx !== -1) {
+					matchIndex = wikiIdx;
+					matchedText = content.slice(wikiIdx, endIdx + 2);
+				}
+			}
+		}
+
+		// 策略3: 模糊匹配包含 oldFilename 的 markdown 图片语法
+		if (matchIndex === -1 && oldFilename) {
+			const fuzzyRegex = new RegExp(
+				`!\\[([^\\]]*)\\]\\(([^)]*${oldFilename.replace(/[.*+?^${}()|[\\\\]\\]/g, '\\\\$&')}[^)]*)\\)`
+			);
+			const m = content.match(fuzzyRegex);
+			if (m) {
+				matchIndex = m.index ?? -1;
+				matchedText = m[0];
+			}
+		}
+
+		// 策略4: 用 alt 匹配
+		if (matchIndex === -1 && alt) {
+			const altRegex = new RegExp(`!\\[${alt.replace(/[.*+?^${}()|[\\\\]\\]/g, '\\\\$&')}\\]\\([^)]+\\)`);
+			const m = content.match(altRegex);
+			if (m) {
+				matchIndex = m.index ?? -1;
+				matchedText = m[0];
+			}
+		}
+
+		if (matchIndex === -1) {
+			new Notice('未能在 Markdown 中找到该图片，请手动替换');
+			return;
+		}
+
+		// 判断原语法类型，保持格式一致
+		const isWiki = matchedText.startsWith('![[');
+		const newText = isWiki
+			? `![[${newFile.name}]]`
+			: `![${alt || newFile.name}](${newPath})`;
+
+		const from = editor.offsetToPos(matchIndex);
+		const to = editor.offsetToPos(matchIndex + matchedText.length);
+		editor.replaceRange(newText, from, to);
+
+		new Notice(`已替换为 ${newFile.name}`);
+
+		// 触发重新渲染以更新预览
+		this.renderCurrentNote().catch(() => {});
 	}
 
 	/** 打开设置面板并切换到 AI 标签 */

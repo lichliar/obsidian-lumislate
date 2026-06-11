@@ -1093,6 +1093,81 @@
 	height: 20px;
 }
 
+/* ===== 底部导航控件（Slidev NavControls 风格） ===== */
+.lumislate-nav-controls {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: 12px;
+	padding-left: 12px;
+	border-left: 1px solid var(--background-modifier-border);
+}
+
+.lumislate-nav-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background 0.15s ease, color 0.15s ease;
+}
+
+.lumislate-nav-btn:hover:not(:disabled) {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.lumislate-nav-btn:disabled {
+	cursor: not-allowed;
+}
+
+.lumislate-nav-page-num {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-normal);
+	cursor: pointer;
+	padding: 2px 8px;
+	border-radius: 4px;
+	min-width: 48px;
+	text-align: center;
+	user-select: none;
+	transition: background 0.15s ease;
+}
+
+.lumislate-nav-page-num:hover {
+	background: var(--background-modifier-hover);
+}
+
+/* 页码跳转输入框 */
+.lumislate-goto-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 998;
+}
+
+.lumislate-goto-input {
+	padding: 6px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 13px;
+	width: 80px;
+	text-align: center;
+	outline: none;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.lumislate-goto-input:focus {
+	border-color: var(--interactive-accent);
+}
+
 .lumislate-agent-card-info {
 	flex: 1;
 	min-width: 0;
@@ -1176,6 +1251,116 @@
 .lumislate-status-warning {
 	color: var(--text-error);
 	font-size: 13px;
+}
+
+/** ===== 版式选择器（Slidev 风格 SVG 图标矩阵） ===== */
+.lumislate-layout-picker-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 999;
+}
+
+.lumislate-layout-picker {
+	position: fixed;
+	z-index: 1000;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+	padding: 12px;
+	min-width: 220px;
+	animation: lumislate-picker-in 0.15s ease-out;
+}
+
+@keyframes lumislate-picker-in {
+	from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+	to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.lumislate-layout-picker-header {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-muted);
+	padding: 0 4px 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin-bottom: 8px;
+	letter-spacing: 0.02em;
+}
+
+.lumislate-layout-grid {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 4px;
+}
+
+.lumislate-layout-item {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 5px;
+	padding: 8px 4px;
+	border-radius: 8px;
+	cursor: pointer;
+	transition: all 0.12s ease;
+	border: 1.5px solid transparent;
+}
+
+.lumislate-layout-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.lumislate-layout-item.active {
+	border-color: var(--interactive-accent);
+	background: rgba(var(--interactive-accent-rgb), 0.08);
+}
+
+.lumislate-layout-item.active .lumislate-layout-item-icon {
+	color: var(--interactive-accent);
+}
+
+.lumislate-layout-item-icon {
+	width: 28px;
+	height: 28px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-muted);
+	transition: color 0.12s ease;
+}
+
+.lumislate-layout-item-icon svg {
+	width: 100%;
+	height: 100%;
+}
+
+.lumislate-layout-item-label {
+	font-size: 10px;
+	font-weight: 500;
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
+.lumislate-layout-item:hover .lumislate-layout-item-label,
+.lumislate-layout-item.active .lumislate-layout-item-label {
+	color: var(--text-normal);
+}
+
+.lumislate-layout-btn-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	vertical-align: text-bottom;
+	margin-right: 2px;
+}
+
+.lumislate-layout-btn-icon svg {
+	width: 100%;
+	height: 100%;
 }
 
 /* ===== Skill 确认弹窗 ===== */
